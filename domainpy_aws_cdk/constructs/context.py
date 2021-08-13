@@ -113,7 +113,8 @@ class Context(cdk.Construct):
                 'INTEGRATION_EVENT_BUS_NAME': integration_bus.event_bus_name,
             },
             timeout=cdk.Duration.seconds(10),
-            tracing=lambda_.Tracing.ACTIVE
+            tracing=lambda_.Tracing.ACTIVE,
+            description='[CONTEXT] Handles commands and integrations and emits dmoain events'
         )
         microservice.add_event_source(lambda_sources.SqsEventSource(queue))
 
@@ -191,7 +192,8 @@ class ContextMap(cdk.Construct):
                 'CONTEXT_QUEUE_NAME': context.queue_name
             },
             timeout=cdk.Duration.seconds(10),
-            tracing=lambda_.Tracing.ACTIVE
+            tracing=lambda_.Tracing.ACTIVE,
+            description='[CONTEXT MAP] Listen for other contexts messages and transforms into known context message'
         )
         microservice.add_event_source(lambda_sources.SqsEventSource(queue))
 

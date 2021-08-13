@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 import os
-import enum
 import shutil
-import tempfile
 import typing
+import tempfile
+import dataclasses
 
 from aws_cdk import core as cdk
+from aws_cdk import aws_apigateway as apigateway
 from aws_cdk import aws_dynamodb as dynamodb
+from aws_cdk import aws_iam as iam
 from aws_cdk import aws_sns as sns
 from aws_cdk import aws_lambda as lambda_
 from aws_cdk import aws_lambda_python as lambda_python
@@ -27,15 +29,120 @@ class TraceStore(cdk.Construct):
     def table_name(self):
         return self.table.table_name
 
-
-class MessageType(enum.Enum):
-    APPLICATION_COMMAND = "ApplicationCommand"
-    INTEGRATION_EVENT = "IntegrationEvent"
+    def grant_read_write_data(self, grantee: iam.IGrantable) -> iam.Grant:
+        return self.table.grant_read_write_data(grantee)
 
 
-class Definition(typing.TypedDict, total=False):
+class Gateway(cdk.Construct):
+
+    def __init__(
+        self, 
+        scope: cdk.Construct, 
+        construct_id: str, 
+        *,
+        share_prefix: str
+    ) -> None:
+        super().__init__(scope, construct_id)
+
+        self.rest = apigateway.RestApi(self, 'rest',
+            rest_api_name=f'{share_prefix}Gateway',
+            deploy_options=apigateway.StageOptions(
+                stage_name='api',
+                tracing_enabled=True
+            )
+        )
+
+        self.response_model = apigateway.Model(self, f'response-model',
+            rest_api=self.rest,
+            schema=apigateway.JsonSchema(
+                schema=apigateway.JsonSchemaVersion.DRAFT4,
+                type=apigateway.JsonSchemaType.OBJECT,
+                properties={
+                    'traceId': apigateway.JsonSchema(
+                        type=apigateway.JsonSchemaType.STRING
+                    )
+                }
+            ),
+            content_type='application/json',
+            model_name='Response'
+        )
+
+        cdk.CfnOutput(self, 'url',
+            export_name=f'{share_prefix}GatewayUrl',
+            value=self.rest.url
+        )
+
+    def add_publisher(self, publisher: Publisher) -> None:
+        publisher_topic = publisher.message.topic
+        attributes = publisher.message.attributes
+        
+        structs = {}
+        if isinstance(publisher.message, ApplicationCommandDefinition):
+            structs = { s.struct_name: s.struct_definitions for s in publisher.message.structs }
+
+        resource = self.rest.root.add_resource(publisher_topic)
+        resource.add_method(
+            'post',
+            apigateway.LambdaIntegration(publisher.function),
+            request_models={
+                'application/json': apigateway.Model(self, f'{publisher_topic}RequestModel',
+                    rest_api=self.rest,
+                    schema=apigateway.JsonSchema(
+                        schema=apigateway.JsonSchemaVersion.DRAFT4,
+                        type=apigateway.JsonSchemaType.OBJECT,
+                        properties={
+                            a.attribute_name: definition_to_jsonschema(a, structs)
+                            for a in attributes
+                        }
+                    ),
+                    content_type='application/json',
+                    model_name=publisher_topic
+                ),
+            },
+            method_responses=[
+                apigateway.MethodResponse(
+                    status_code='200',
+                    response_models={
+                        'application/json': self.response_model
+                    }
+                )
+            ]
+        )
+
+
+@dataclasses.dataclass(frozen=True)
+class Definition:
     attribute_name: str
     attribute_type: str
+
+
+@dataclasses.dataclass(frozen=True)
+class Struct:
+    struct_name: str
+    struct_definitions: typing.Sequence[Definition]
+
+
+@dataclasses.dataclass(frozen=True)
+class ApplicationCommandDefinition:
+    topic: str
+    version: int
+    structs: typing.Sequence[Struct]
+    attributes: typing.Sequence[Definition]
+    resolutions: typing.Sequence[str]
+
+
+@dataclasses.dataclass(frozen=True)
+class IntegrationEventDefinition:
+    topic: str
+    version: int
+    context: str
+    resolve: str
+    error: typing.Optional[str]
+    attributes: typing.Sequence[Definition]
+    resolutions: typing.Sequence[str]
+
+
+PythonLineCode = str
 
 
 class Publisher(cdk.Construct):
@@ -45,19 +152,21 @@ class Publisher(cdk.Construct):
         scope: cdk.Construct, 
         construct_id: str,
         *,
-        name: str,
-        message_type: MessageType,
-        structs: typing.Sequence[typing.Tuple[str, typing.Sequence[Definition]]],
-        attributes: typing.Sequence[Definition],
-        resolutions: typing.Sequence[str],
+        message: typing.Union[ApplicationCommandDefinition, IntegrationEventDefinition],
         trace_store: TraceStore,
+        share_prefix: str
     ) -> None:
         super().__init__(scope, construct_id)
+        self.message = message
 
         self.topic = sns.Topic(self, 'topic')
 
         with tempfile.TemporaryDirectory() as tmp:
             shutil.copytree('/Users/brianestrada/Offline/domainpy/domainpy', os.path.join(tmp, 'domainpy'))
+
+            with open(os.path.join(tmp, 'requirements.txt'), 'w') as file:
+                file.write('typeguard==2.12.1\n')
+                file.write('aws-xray-sdk==2.8.0\n')
             
             domainpy_layer = lambda_python.PythonLayerVersion(self, 'domainpy',
                 entry=tmp,
@@ -69,32 +178,7 @@ class Publisher(cdk.Construct):
 
         with tempfile.TemporaryDirectory() as tmp:
             with open(os.path.join(tmp, 'app.py'), 'w') as file:
-                
-                body_lines = []
-                for struct_name, struct_definitions in structs:
-                    body_lines.extend([
-                        f"\tclass {struct_name}({message_type.value}.Struct):",
-                    ])
-                    body_lines.extend([
-                        "\t\t" + d['attribute_name'] + ': ' + d['attribute_type']
-                        for d in struct_definitions
-                    ])
-                    body_lines.extend([""])
-
-                body_lines.extend(
-                    '\t' + a['attribute_name'] + ': ' + a['attribute_type']
-                    for a in attributes
-                )
-                
-                body = '\n'.join(body_lines)
-                file.write(
-                    PUBLISHER_CODE.format(
-                        name=name,
-                        message_type=message_type.value,
-                        definition=body,
-                        resolutions=resolutions
-                    )
-                )
+                file.write(self._build_publisher_code(message))
 
             self.function = lambda_python.PythonFunction(self, 'function',
                 runtime=lambda_.Runtime.PYTHON_3_8,
@@ -106,13 +190,98 @@ class Publisher(cdk.Construct):
                     'TRACE_STORE_TABLE_NAME': trace_store.table_name
                 },
                 layers=[domainpy_layer],
-                tracing=lambda_.Tracing.ACTIVE
+                tracing=lambda_.Tracing.ACTIVE,
+                description=f'[GATEWAY] Publish over sns topic the message for {message.topic}'
             )
+            self.topic.grant_publish(self.function)
+            trace_store.grant_read_write_data(self.function)
 
         cdk.CfnOutput(self, 'topic_arn', 
-            export_name=name, 
+            export_name=f'{share_prefix}{message.topic}',
             value=self.topic.topic_arn
         )
+
+    def _build_publisher_code(self, message: typing.Union[ApplicationCommandDefinition, IntegrationEventDefinition]):
+        message_definition = '\n'.join(self._build_message_code(message))
+        return PUBLISHER_CODE_TEMPLATE.format(
+            message_definition=message_definition,
+            message_topic=message.topic,
+            message_resolutions=message.resolutions
+        )
+
+    def _build_message_code(self, message: typing.Union[ApplicationCommandDefinition, IntegrationEventDefinition]) -> typing.Sequence[PythonLineCode]:
+        if isinstance(message, ApplicationCommandDefinition):
+            return self._build_application_command_code(message)
+        else:
+            return self._build_integration_event_code(message)
+
+    def _build_message_definitions_code(self, definitions: typing.Sequence[Definition])  -> typing.Sequence[PythonLineCode]:
+        return [
+            d.attribute_name + ': ' + d.attribute_type for d in definitions
+        ]
+
+    def _build_application_command_struct_code(self, struct: Struct) -> typing.Sequence[PythonLineCode]:
+        struct_name = struct.struct_name
+        struct_definitions = struct.struct_definitions
+
+        body_lines = []
+        body_lines.extend([
+            f'class {struct_name}(ApplicationCommand.Struct):'
+        ])
+        body_lines.extend([
+            f'\t{d}'
+            for d in self._build_message_definitions_code(struct_definitions)
+        ])
+        return body_lines
+
+    def _build_application_command_code(self, command: ApplicationCommandDefinition) -> typing.Sequence[PythonLineCode]:
+        message_topic = command.topic
+        message_version = command.version
+
+        body_lines = []
+        body_lines.extend([
+            f'class {message_topic}(ApplicationCommand):',
+            f'\t__version__: int = {message_version}'
+        ])
+        
+        for struct in command.structs:
+            body_lines.extend([''])
+            body_lines.extend([
+                f'\t{l}'
+                for l in self._build_application_command_struct_code(struct)
+            ])
+
+        body_lines.extend([''])
+        body_lines.extend([
+            f'\t{l}'
+            for l in self._build_message_definitions_code(command.attributes)
+        ])
+
+        return body_lines
+
+    def _build_integration_event_code(self, integration: IntegrationEventDefinition) -> typing.Sequence[PythonLineCode]:
+        message_topic = integration.topic
+        message_version = integration.version
+        message_resolve = integration.resolve
+        message_error = integration.error
+        message_context = integration.context
+
+        body_lines = []
+        body_lines.extend([
+            f'class {message_topic}(IntegrationEvent):',
+            f'\t__version__: int = {message_version}',
+            f'\t__resolve__: str = "{message_resolve}"',
+            f'\t__error__: typing.Optional[str] = "{message_error}"',
+            f'\t__context__: str = "{message_context}"'
+        ])
+
+        body_lines.extend([''])
+        body_lines.extend([
+            f'\t{l}'
+            for l in self._build_message_definitions_code(integration.attributes)
+        ])
+
+        return body_lines
 
 
 class Resolver(cdk.Construct):
@@ -121,14 +290,55 @@ class Resolver(cdk.Construct):
         super().__init__(scope, construct_id)
 
 
-PUBLISHER_CODE = \
+def definition_to_jsonschema(
+    definition: Definition, 
+    structs: typing.Dict[str, typing.Sequence[Definition]]
+) -> apigateway.JsonSchema:
+    _type = definition.attribute_type
+    if _type == 'str':
+        return apigateway.JsonSchema(type=apigateway.JsonSchemaType.STRING)
+
+    if _type in ('int', 'float'):
+        return apigateway.JsonSchema(type=apigateway.JsonSchemaType.NUMBER)
+
+    if _type == 'bool':
+        return apigateway.JsonSchema(type=apigateway.JsonSchemaType.BOOLEAN)
+
+    _matches = ('Tuple', 'List', 'Sequence')
+    if any(m in _type for m in _matches):
+        return apigateway.JsonSchema(type=apigateway.JsonSchemaType.ARRAY)
+
+    if _type in structs:
+        _struct = structs[_type]
+        return apigateway.JsonSchema(
+            type=apigateway.JsonSchemaType.OBJECT,
+            properties={
+                a.attribute_name: definition_to_jsonschema(a, structs)
+                for a in _struct
+            }
+        )
+
+PUBLISHER_CODE_TEMPLATE = \
 """
 import os
 import uuid
+import json
 import typing
+import logging
+import datetime
 
-from domainpy.application import ApplicationCommand, IntegrationEvent
+from aws_xray_sdk.core import patch_all
+patch_all()
+
+from domainpy.application import (
+    ApplicationCommand,
+    IntegrationEvent,
+    SuccessIntegrationEvent,
+    FailureIntegrationEvent
+)
 from domainpy.infrastructure import (
+    record_fromdict,
+    MessageType,
     Mapper, 
     Transcoder, 
     AwsSimpleNotificationServicePublisher, 
@@ -136,31 +346,57 @@ from domainpy.infrastructure import (
     TraceResolution, 
     DynamoDBTraceRecordManager
 )
+from domainpy.utils import Bus
 
 TOPIC_ARN = os.getenv('TOPIC_ARN')
 TRACE_STORE_TABLE_NAME = os.getenv('TRACE_STORE_TABLE_NAME')
 
-mapper = Mapper(
-    transcoder=Transcoder()
-)
+logging.getLogger().setLevel(logging.INFO)
+
+transcoder=Transcoder()
+mapper = Mapper(transcoder=transcoder)
 
 @mapper.register
-class {name}({message_type}):
-{definition}
+{message_definition}
 
-topic = {name}
-resolutions = {resolutions}
 
 def handler(event, context):
     trace_id = str(uuid.uuid4())
-    print('Publishing', trace_id, 'with', event)
 
-    message = topic(**event['arguments'])
-    publish(trace_id, message, resolutions)
+    payload = json.loads(event['body'])
+    if 'trace_id' in payload:
+        trace_id = payload.pop('trace_id')
+
+    logging.info('Handle event with trace: %s: %s', trace_id, event)
+
+    try:
+        message = transcoder.decode(
+            dict(
+                timestamp=datetime.datetime.timestamp(datetime.datetime.now()),
+                trace_id=trace_id,
+                payload=payload
+            ), 
+            {message_topic}
+        )
+
+        publish(trace_id, message, {message_resolutions})
+    except Exception as error:
+        logging.exception('Mapping error: When handling event: %s', event)
+        return {{
+            'statusCode': 500,
+            'isBase64Encoded': False,
+            'body': f'Some error occurred. Contact the system administrator. Message: {message_topic} and Trace: {{trace_id}}'
+        }}
 
     return {{
         'statusCode': 200,
-        'traceId': trace_id
+        'headers': {{
+            'Content-Type': 'application/json'
+        }},
+        'isBase64Encoded': False,
+        'body': json.dumps({{
+            'traceId': trace_id
+        }})
     }}
 
 
@@ -175,7 +411,9 @@ def publish(
     publisher = AwsSimpleNotificationServicePublisher(TOPIC_ARN, mapper)
     publisher.publish(_message)
 
+    resolver_bus = Bus()
+
     trace_store_manager = DynamoDBTraceRecordManager(TRACE_STORE_TABLE_NAME)
-    trace_store = TraceStore(trace_store_manager)
+    trace_store = TraceStore(trace_store_manager, resolver_bus)
     trace_store.store_in_progress(trace_id, _record, resolutions)
 """

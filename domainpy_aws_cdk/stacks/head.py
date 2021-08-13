@@ -2,15 +2,13 @@ import typing
 
 from aws_cdk import core as cdk
 
-from domainpy_aws_cdk.constructs.head import Definition, TraceStore, Publisher, MessageType
-
-
-class Message(typing.TypedDict):
-    name: str
-    message_type: MessageType
-    structs: typing.Sequence[Definition]
-    attributes: typing.Sequence[Definition]
-    resolutions: typing.Sequence[str]
+from domainpy_aws_cdk.constructs.head import (
+    Gateway,
+    ApplicationCommandDefinition,
+    IntegrationEventDefinition,
+    TraceStore, 
+    Publisher
+)
 
 
 class MessageLakeStack(cdk.Stack):
@@ -28,17 +26,21 @@ class GatewayBusStack(cdk.Stack):
         scope: cdk.Construct, 
         construct_id: str, 
         *,
-        messages: typing.Sequence[Message],
+        messages: typing.Sequence[typing.Union[ApplicationCommandDefinition, IntegrationEventDefinition]],
         message_lake_stack: MessageLakeStack,
+        share_prefix: str,
         **kwargs
     ) -> None:
         super().__init__(scope, construct_id, **kwargs)
 
-        self.publishers = []
+        gateway = Gateway(self, 'gateway', share_prefix=share_prefix)
 
-        for m in messages:
-            self.publishers.append(
-                Publisher(
-                    self, m['name'], **m, trace_store=message_lake_stack.trace_store
+        for message in messages:
+            gateway.add_publisher(
+                Publisher(self, message.topic,
+                    message=message,
+                    trace_store=message_lake_stack.trace_store,
+                    share_prefix=share_prefix
                 )
             )
+    

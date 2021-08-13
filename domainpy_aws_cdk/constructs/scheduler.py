@@ -30,7 +30,7 @@ class EventScheduler(cdk.Construct):
         )
 
         rest = apigateway.RestApi(self, 'rest',
-            rest_api_name=f'{share_prefix}-event-scheduler',
+            rest_api_name=f'{share_prefix}EventScheduler',
             deploy_options=apigateway.StageOptions(
                 stage_name='api',
                 tracing_enabled=True
@@ -39,7 +39,7 @@ class EventScheduler(cdk.Construct):
 
         publisher_function = lambda_.Function(self, 'publisher',
             code=lambda_.Code.from_inline(PUBLISHER_CODE),
-            handler='app.handler',
+            handler='index.handler',
             runtime=lambda_.Runtime.PYTHON_3_8,
             environment={
                 'INTEGRATION_EVENT_BUS_NAME': integration_bus.event_bus_name
