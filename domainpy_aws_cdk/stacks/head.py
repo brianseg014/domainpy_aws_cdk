@@ -6,8 +6,10 @@ from domainpy_aws_cdk.constructs.head import (
     Gateway,
     ApplicationCommandDefinition,
     IntegrationEventDefinition,
+    MessageLake,
     TraceStore, 
-    Publisher
+    Publisher,
+    Resolver
 )
 
 
@@ -16,6 +18,7 @@ class MessageLakeStack(cdk.Stack):
     def __init__(self, scope: cdk.Construct, construct_id: str, **kwargs) -> None:
         super().__init__(scope, construct_id, **kwargs)
 
+        self.message_lake = MessageLake(self, 'messagelake')
         self.trace_store = TraceStore(self, 'tracestore')
     
 
@@ -44,3 +47,8 @@ class GatewayBusStack(cdk.Stack):
                 )
             )
     
+        Resolver(self, 'resolver',
+            trace_store=message_lake_stack.trace_store,
+            message_lake=message_lake_stack.message_lake,
+            share_prefix=share_prefix
+        )

@@ -9,10 +9,16 @@ import dataclasses
 from aws_cdk import core as cdk
 from aws_cdk import aws_apigateway as apigateway
 from aws_cdk import aws_dynamodb as dynamodb
+from aws_cdk import aws_events as events
+from aws_cdk import aws_events_targets as events_targets
 from aws_cdk import aws_iam as iam
 from aws_cdk import aws_sns as sns
+from aws_cdk import aws_sns_subscriptions as sns_subscriptions
 from aws_cdk import aws_lambda as lambda_
 from aws_cdk import aws_lambda_python as lambda_python
+from aws_cdk import aws_s3 as s3
+from aws_cdk import aws_sqs as sqs
+from aws_cdk import aws_kinesisfirehose as kfirehose
 
 
 class TraceStore(cdk.Construct):
@@ -31,6 +37,25 @@ class TraceStore(cdk.Construct):
 
     def grant_read_write_data(self, grantee: iam.IGrantable) -> iam.Grant:
         return self.table.grant_read_write_data(grantee)
+
+
+class MessageLake(cdk.Construct):
+
+    def __init__(self, scope: cdk.Construct, construct_id: str) -> None:
+        super().__init__(scope, construct_id)
+
+        self.bucket = s3.Bucket(self, 'bucket',
+            versioned=False,
+            auto_delete_objects=False,
+            removal_policy=cdk.RemovalPolicy.DESTROY
+        )
+
+    @property
+    def bucket_arn(self):
+        return self.bucket.bucket_arn
+
+    def grant_write(self, grantee: iam.IGrantable) -> iam.Grant:
+        return self.bucket.grant_write(grantee)
 
 
 class Gateway(cdk.Construct):
@@ -186,7 +211,7 @@ class Publisher(cdk.Construct):
                 index='app.py',
                 handler='handler',
                 environment={
-                    'TOPIC_ARN': self.topic.topic_arn,
+                    'PUBLISHER_TOPIC_ARN': self.topic.topic_arn,
                     'TRACE_STORE_TABLE_NAME': trace_store.table_name
                 },
                 layers=[domainpy_layer],
@@ -286,8 +311,71 @@ class Publisher(cdk.Construct):
 
 class Resolver(cdk.Construct):
 
-    def __init__(self, scope: cdk.Construct, construct_id: str) -> None:
+    def __init__(
+        self, 
+        scope: cdk.Construct, 
+        construct_id: str, *,
+        trace_store: TraceStore, 
+        message_lake: MessageLake,
+        share_prefix: str
+    ) -> None:
         super().__init__(scope, construct_id)
+
+        integration_bus = events.EventBus.from_event_bus_name(
+            self, 'integration-bus', cdk.Fn.import_value(f'{share_prefix}IntegrationBusName')
+        )
+
+        self.topic = sns.Topic(self, 'topic')
+
+        with tempfile.TemporaryDirectory() as tmp:
+            shutil.copytree('/Users/brianestrada/Offline/domainpy/domainpy', os.path.join(tmp, 'domainpy'))
+
+            with open(os.path.join(tmp, 'requirements.txt'), 'w') as file:
+                file.write('typeguard==2.12.1\n')
+                file.write('aws-xray-sdk==2.8.0\n')
+            
+            domainpy_layer = lambda_python.PythonLayerVersion(self, 'domainpy',
+                entry=tmp,
+                compatible_runtimes=[
+                    lambda_.Runtime.PYTHON_3_7,
+                    lambda_.Runtime.PYTHON_3_8
+                ]
+            )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with open(os.path.join(tmp, 'app.py'), 'w') as file:
+                file.write(RESOLVER_CODE)
+
+            function = lambda_python.PythonFunction(self, 'function',
+                runtime=lambda_.Runtime.PYTHON_3_8,
+                    entry=tmp,
+                    index='app.py',
+                    handler='handler',
+                    environment={
+                        'RESOLVER_TOPIC_ARN': self.topic.topic_arn,
+                        'TRACE_STORE_TABLE_NAME': trace_store.table_name
+                    },
+                    layers=[domainpy_layer],
+                    tracing=lambda_.Tracing.ACTIVE,
+                    description=f'[GATEWAY] Resolver'
+            )
+            self.topic.grant_publish(function)
+            trace_store.grant_read_write_data(function)
+
+        dlq = sqs.Queue(self, 'resolver-dlq')
+        events.Rule(self, 'integartion-rule',
+            event_bus=integration_bus,
+            event_pattern=events.EventPattern(
+                version=['0']
+            ),
+            targets=[
+                events_targets.LambdaFunction(
+                    function,
+                    event=events.RuleTargetInput.from_event_path('$.detail'),
+                    dead_letter_queue=dlq
+                )
+            ]
+        )
 
 
 def definition_to_jsonschema(
@@ -348,10 +436,10 @@ from domainpy.infrastructure import (
 )
 from domainpy.utils import Bus
 
-TOPIC_ARN = os.getenv('TOPIC_ARN')
+PUBLISHER_TOPIC_ARN = os.getenv('PUBLISHER_TOPIC_ARN')
 TRACE_STORE_TABLE_NAME = os.getenv('TRACE_STORE_TABLE_NAME')
 
-logging.getLogger().setLevel(logging.INFO)
+# logging.getLogger().setLevel(logging.INFO)
 
 transcoder=Transcoder()
 mapper = Mapper(transcoder=transcoder)
@@ -367,7 +455,7 @@ def handler(event, context):
     if 'trace_id' in payload:
         trace_id = payload.pop('trace_id')
 
-    logging.info('Handle event with trace: %s: %s', trace_id, event)
+    logging.info('Handle event with trace: %s: %s', trace_id, json.dumps(event))
 
     try:
         message = transcoder.decode(
@@ -381,7 +469,7 @@ def handler(event, context):
 
         publish(trace_id, message, {message_resolutions})
     except Exception as error:
-        logging.exception('Mapping error: When handling event: %s', event)
+        logging.exception('Mapping error: When handling event: %s', json.dumps(event))
         return {{
             'statusCode': 500,
             'isBase64Encoded': False,
@@ -408,12 +496,60 @@ def publish(
     _message = message
     _record = mapper.serialize(message)
 
-    publisher = AwsSimpleNotificationServicePublisher(TOPIC_ARN, mapper)
+    publisher = AwsSimpleNotificationServicePublisher(PUBLISHER_TOPIC_ARN, mapper)
     publisher.publish(_message)
+    
+    trace_store_manager = DynamoDBTraceRecordManager(TRACE_STORE_TABLE_NAME)
+    trace_store = TraceStore(trace_store_manager, Bus())
+    trace_store.store_in_progress(trace_id, _record, resolutions)
+"""
 
+RESOLVER_CODE = \
+"""
+import os
+
+from domainpy.application import IntegrationEvent
+from domainpy.infrastructure import (
+    Mapper,
+    Transcoder,
+    TraceStore,
+    DynamoDBTraceRecordManager,
+    AwsSimpleNotificationServicePublisher
+)
+from domainpy.utils import Bus, PublisherSubscriber
+
+from aws_xray_sdk.core import patch_all
+patch_all()
+
+RESOLVER_TOPIC_ARN = os.getenv('RESOLVER_TOPIC_ARN')
+TRACE_STORE_TABLE_NAME = os.getenv('TRACE_STORE_TABLE_NAME')
+
+mapper = Mapper(
+    transcoder=Transcoder()
+)
+
+def handler(event, context):
     resolver_bus = Bus()
+    resolver_bus.attach(
+        PublisherSubscriber(
+            AwsSimpleNotificationServicePublisher(
+                topic_arn=RESOLVER_TOPIC_ARN,
+                mapper=mapper
+            )
+        )
+    )
 
     trace_store_manager = DynamoDBTraceRecordManager(TRACE_STORE_TABLE_NAME)
     trace_store = TraceStore(trace_store_manager, resolver_bus)
-    trace_store.store_in_progress(trace_id, _record, resolutions)
+
+    trace_id = event['trace_id']
+    context = event['context']
+    resolve = event['resolve']
+    if resolve == IntegrationEvent.Resolution.success:
+        trace_store.store_context_success(trace_id, context)
+    elif resolve == IntegrationEvent.Resolution.failure:
+        error = event['error']
+        trace_store.store_context_failure(trace_id, context, error)
+
+    return { "done": True }
 """

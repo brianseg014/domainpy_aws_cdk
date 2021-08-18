@@ -44,7 +44,8 @@ class EventScheduler(cdk.Construct):
             environment={
                 'INTEGRATION_EVENT_BUS_NAME': integration_bus.event_bus_name
             },
-            tracing=lambda_.Tracing.ACTIVE
+            tracing=lambda_.Tracing.ACTIVE,
+            description="[SCHEDULER] Publish integration event into integration bus"
         )
         integration_bus.grant_put_events_to(publisher_function)
 

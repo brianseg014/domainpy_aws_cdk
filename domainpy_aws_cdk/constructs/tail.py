@@ -4,9 +4,9 @@ import json
 from aws_cdk import core as cdk
 from aws_cdk import aws_iam as iam
 from aws_cdk import aws_events as events
-from aws_cdk import aws_events_targets as tevents
+from aws_cdk import aws_events_targets as events_targets
 from aws_cdk import aws_kinesisfirehose as kfirehose
-from aws_cdk import aws_lambda as lamdba_
+from aws_cdk import aws_lambda as lambda_
 from aws_cdk import aws_s3 as s3
 
 
@@ -60,11 +60,12 @@ class EventBus(cdk.Construct):
         )
         firehose_policy.attach_to_role(firehose_role)
 
-        transformer = lamdba_.Function(self, 'transformer',
-            code=lamdba_.Code.from_inline(TRANSFORMER_CODE),
-            runtime=lamdba_.Runtime.PYTHON_3_8,
+        transformer = lambda_.Function(self, 'transformer',
+            code=lambda_.Code.from_inline(TRANSFORMER_CODE),
+            runtime=lambda_.Runtime.PYTHON_3_8,
             handler='index.handler',
-            timeout=cdk.Duration.minutes(3)
+            timeout=cdk.Duration.minutes(3),
+            description='[EVENT BUS] Adds new line at the end of each event'
         )
         transformer.grant_invoke(firehose_role)
 
@@ -94,13 +95,13 @@ class EventBus(cdk.Construct):
             )
         )
         
-        bus_to_firehouse_rule = events.Rule(self, 'bus-to-firehose',
+        events.Rule(self, 'bus-to-firehose',
             event_pattern=events.EventPattern(
                 version=['0']
             ),
             event_bus=event_bus,
             targets=[
-                tevents.KinesisFirehoseStream(
+                events_targets.KinesisFirehoseStream(
                     firehose, 
                     message=events.RuleTargetInput.from_event_path('$.detail')
                 )
