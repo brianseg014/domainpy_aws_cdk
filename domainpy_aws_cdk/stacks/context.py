@@ -55,7 +55,7 @@ class ContextMapComputeStack(cdk.Stack):
         domain_sources: typing.Sequence[str],
         integration_subscriptions: typing.Sequence[str],
         integration_sources: typing.Sequence[str],
-        context: Context,
+        context_compute_stack: ContextComputeStack,
         share_prefix: str,
         **kwargs
     ) -> None:
@@ -67,6 +67,6 @@ class ContextMapComputeStack(cdk.Stack):
             domain_sources=domain_sources,
             integration_subscriptions=integration_subscriptions,
             integration_sources=integration_sources,
-            context=context,
+            context=context_compute_stack.context,
             share_prefix=share_prefix
         )

@@ -79,7 +79,7 @@ class EventScheduler(cdk.Construct):
                             selection_pattern='200',
                             status_code='200',
                             response_templates={
-                                'application/json': "$input.json('$')"
+                                'application/json': "$input.json('$.payload')"
                             }
                         )
                     ]
@@ -108,14 +108,14 @@ INTEGRATION_EVENT_BUS_NAME = os.getenv('INTEGRATION_EVENT_BUS_NAME')
 def handler(aws_event, context):
     cloudwatch_events = boto3.client('events')
     
-    event = aws_event['event']
+    payload = aws_event['payload']
 
     cloudwatch_events.put_events(
         Entries=[
             {
-                'Source': event['context'],
-                'DetailType': event['topic'],
-                'Detail': json.dumps(aws_event['event']),
+                'Source': payload['context'],
+                'DetailType': payload['topic'],
+                'Detail': json.dumps(payload),
                 'EventBusName': INTEGRATION_EVENT_BUS_NAME
             }
         ]
