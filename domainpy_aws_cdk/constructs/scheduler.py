@@ -89,9 +89,7 @@ class EventScheduler(cdk.Construct):
                             selection_pattern='200',
                             status_code='200',
                             response_templates={
-                                'application/json': json.dumps({
-                                    'scheduled': True
-                                })
+                                'application/json': '$input.json("$")'
                             }
                         )
                     ]
