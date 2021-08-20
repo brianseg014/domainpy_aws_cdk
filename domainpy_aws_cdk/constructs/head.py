@@ -1,9 +1,6 @@
 from __future__ import annotations
 
-import os
-import shutil
 import typing
-import tempfile
 import dataclasses
 
 from aws_cdk import core as cdk
@@ -179,38 +176,28 @@ class Publisher(cdk.Construct):
         *,
         message: typing.Union[ApplicationCommandDefinition, IntegrationEventDefinition],
         trace_store: TraceStore,
-        share_prefix: str
+        share_prefix: str,
+        domainpy_layer: lambda_.LayerVersion
     ) -> None:
         super().__init__(scope, construct_id)
         self.message = message
 
         self.topic = sns.Topic(self, 'topic')
 
-        with tempfile.TemporaryDirectory() as tmp:
-            shutil.copytree('/Users/brianestrada/Offline/domainpy/domainpy', os.path.join(tmp, 'domainpy'))
-
-            with open(os.path.join(tmp, 'requirements.txt'), 'w') as file:
-                file.write('typeguard==2.12.1\n')
-                file.write('aws-xray-sdk==2.8.0\n')
-                file.write('requests==2.26.0\n')
-            
-            with open(os.path.join(tmp, 'app.py'), 'w') as file:
-                file.write(self._build_publisher_code(message))
-
-            self.function = lambda_python.PythonFunction(self, 'function',
-                entry=tmp,
-                runtime=lambda_.Runtime.PYTHON_3_8,
-                index='app.py',
-                handler='handler',
-                environment={
-                    'PUBLISHER_TOPIC_ARN': self.topic.topic_arn,
-                    'TRACE_STORE_TABLE_NAME': trace_store.table_name
-                },
-                tracing=lambda_.Tracing.ACTIVE,
-                description=f'[GATEWAY] Publish over sns topic the message for {message.topic}'
-            )
-            self.topic.grant_publish(self.function)
-            trace_store.grant_read_write_data(self.function)
+        self.function = lambda_.Function(self, 'function',
+            code=lambda_.Code.from_inline(self._build_publisher_code(message)),
+            runtime=lambda_.Runtime.PYTHON_3_8,
+            handler='index.handler',
+            environment={
+                'PUBLISHER_TOPIC_ARN': self.topic.topic_arn,
+                'TRACE_STORE_TABLE_NAME': trace_store.table_name
+            },
+            layers=[domainpy_layer],
+            tracing=lambda_.Tracing.ACTIVE,
+            description=f'[GATEWAY] Publish over sns topic the message for {message.topic}'
+        )
+        self.topic.grant_publish(self.function)
+        trace_store.grant_read_write_data(self.function)
 
         cdk.CfnOutput(self, 'topic_arn', 
             export_name=f'{share_prefix}{message.topic}',
@@ -308,7 +295,8 @@ class Resolver(cdk.Construct):
         construct_id: str, *,
         trace_store: TraceStore, 
         message_lake: MessageLake,
-        share_prefix: str
+        share_prefix: str,
+        domainpy_layer: lambda_.LayerVersion
     ) -> None:
         super().__init__(scope, construct_id)
 
@@ -318,31 +306,20 @@ class Resolver(cdk.Construct):
 
         self.topic = sns.Topic(self, 'topic')
 
-        with tempfile.TemporaryDirectory() as tmp:
-            shutil.copytree('/Users/brianestrada/Offline/domainpy/domainpy', os.path.join(tmp, 'domainpy'))
-
-            with open(os.path.join(tmp, 'requirements.txt'), 'w') as file:
-                file.write('typeguard==2.12.1\n')
-                file.write('aws-xray-sdk==2.8.0\n')
-                file.write('requests==2.26.0\n')
-
-            with open(os.path.join(tmp, 'app.py'), 'w') as file:
-                file.write(RESOLVER_CODE)
-
-            function = lambda_python.PythonFunction(self, 'function',
-                runtime=lambda_.Runtime.PYTHON_3_8,
-                entry=tmp,
-                index='app.py',
-                handler='handler',
-                environment={
-                    'RESOLVER_TOPIC_ARN': self.topic.topic_arn,
-                    'TRACE_STORE_TABLE_NAME': trace_store.table_name
-                },
-                tracing=lambda_.Tracing.ACTIVE,
-                description=f'[GATEWAY] Resolver'
-            )
-            self.topic.grant_publish(function)
-            trace_store.grant_read_write_data(function)
+        function = lambda_.Function(self, 'function',
+            code=lambda_.Code.from_inline(RESOLVER_CODE),
+            runtime=lambda_.Runtime.PYTHON_3_8,
+            handler='index.handler',
+            environment={
+                'RESOLVER_TOPIC_ARN': self.topic.topic_arn,
+                'TRACE_STORE_TABLE_NAME': trace_store.table_name
+            },
+            layers=[domainpy_layer],
+            tracing=lambda_.Tracing.ACTIVE,
+            description=f'[GATEWAY] Resolver'
+        )
+        self.topic.grant_publish(function)
+        trace_store.grant_read_write_data(function)
 
         dlq = sqs.Queue(self, 'resolver-dlq')
         events.Rule(self, 'integartion-rule',
