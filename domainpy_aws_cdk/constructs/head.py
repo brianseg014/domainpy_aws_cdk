@@ -192,29 +192,20 @@ class Publisher(cdk.Construct):
             with open(os.path.join(tmp, 'requirements.txt'), 'w') as file:
                 file.write('typeguard==2.12.1\n')
                 file.write('aws-xray-sdk==2.8.0\n')
+                file.write('requests==2.26.0\n')
             
-            domainpy_layer = lambda_python.PythonLayerVersion(self, 'domainpy',
-                entry=tmp,
-                compatible_runtimes=[
-                    lambda_.Runtime.PYTHON_3_7,
-                    lambda_.Runtime.PYTHON_3_8
-                ]
-            )
-
-        with tempfile.TemporaryDirectory() as tmp:
             with open(os.path.join(tmp, 'app.py'), 'w') as file:
                 file.write(self._build_publisher_code(message))
 
             self.function = lambda_python.PythonFunction(self, 'function',
-                runtime=lambda_.Runtime.PYTHON_3_8,
                 entry=tmp,
+                runtime=lambda_.Runtime.PYTHON_3_8,
                 index='app.py',
                 handler='handler',
                 environment={
                     'PUBLISHER_TOPIC_ARN': self.topic.topic_arn,
                     'TRACE_STORE_TABLE_NAME': trace_store.table_name
                 },
-                layers=[domainpy_layer],
                 tracing=lambda_.Tracing.ACTIVE,
                 description=f'[GATEWAY] Publish over sns topic the message for {message.topic}'
             )
@@ -333,31 +324,22 @@ class Resolver(cdk.Construct):
             with open(os.path.join(tmp, 'requirements.txt'), 'w') as file:
                 file.write('typeguard==2.12.1\n')
                 file.write('aws-xray-sdk==2.8.0\n')
-            
-            domainpy_layer = lambda_python.PythonLayerVersion(self, 'domainpy',
-                entry=tmp,
-                compatible_runtimes=[
-                    lambda_.Runtime.PYTHON_3_7,
-                    lambda_.Runtime.PYTHON_3_8
-                ]
-            )
+                file.write('requests==2.26.0\n')
 
-        with tempfile.TemporaryDirectory() as tmp:
             with open(os.path.join(tmp, 'app.py'), 'w') as file:
                 file.write(RESOLVER_CODE)
 
             function = lambda_python.PythonFunction(self, 'function',
                 runtime=lambda_.Runtime.PYTHON_3_8,
-                    entry=tmp,
-                    index='app.py',
-                    handler='handler',
-                    environment={
-                        'RESOLVER_TOPIC_ARN': self.topic.topic_arn,
-                        'TRACE_STORE_TABLE_NAME': trace_store.table_name
-                    },
-                    layers=[domainpy_layer],
-                    tracing=lambda_.Tracing.ACTIVE,
-                    description=f'[GATEWAY] Resolver'
+                entry=tmp,
+                index='app.py',
+                handler='handler',
+                environment={
+                    'RESOLVER_TOPIC_ARN': self.topic.topic_arn,
+                    'TRACE_STORE_TABLE_NAME': trace_store.table_name
+                },
+                tracing=lambda_.Tracing.ACTIVE,
+                description=f'[GATEWAY] Resolver'
             )
             self.topic.grant_publish(function)
             trace_store.grant_read_write_data(function)

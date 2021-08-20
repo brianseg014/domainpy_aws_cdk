@@ -114,6 +114,7 @@ class Context(cdk.Construct):
                     'EVENT_STORE_TABLE_NAME': event_store.table.table_name,
                     'DOMAIN_EVENT_BUS_NAME': domain_bus.event_bus_name,
                     'INTEGRATION_EVENT_BUS_NAME': integration_bus.event_bus_name,
+                    'SCHEDULER_ENDPOINT': cdk.Fn.import_value(f'{share_prefix}EventSchedulerUrl')
                 },
                 timeout=cdk.Duration.seconds(10),
                 tracing=lambda_.Tracing.ACTIVE,
