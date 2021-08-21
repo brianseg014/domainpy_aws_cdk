@@ -13,6 +13,7 @@ from aws_cdk import aws_lambda_event_sources as lambda_sources
 from aws_cdk import aws_sqs as sqs
 from aws_cdk import aws_sns as sns
 from aws_cdk import aws_sns_subscriptions as sns_subscriptions
+from aws_cdk import aws_stepfunctions as stepfunctions
 
 
 class EventStore(cdk.Construct):
@@ -70,6 +71,9 @@ class Context(cdk.Construct):
         integration_bus = events.EventBus.from_event_bus_name(
             self, 'integration-bus', cdk.Fn.import_value(f'{share_prefix}IntegrationBusName')
         )
+        scheduler = stepfunctions.StateMachine.from_state_machine_arn(
+            self, 'scheduler', cdk.Fn.import_value(f'{share_prefix}EventSchedulerArn')
+        )
 
         self.dead_letter_queue = sqs.Queue(self, "dlq")
         self.queue = sqs.Queue(self, "queue",
@@ -114,7 +118,7 @@ class Context(cdk.Construct):
                     'EVENT_STORE_TABLE_NAME': event_store.table.table_name,
                     'DOMAIN_EVENT_BUS_NAME': domain_bus.event_bus_name,
                     'INTEGRATION_EVENT_BUS_NAME': integration_bus.event_bus_name,
-                    'SCHEDULER_ENDPOINT': cdk.Fn.import_value(f'{share_prefix}EventSchedulerUrl')
+                    'EVENT_SCHEDULER_ARN': scheduler.state_machine_arn
                 },
                 timeout=cdk.Duration.seconds(10),
                 tracing=lambda_.Tracing.ACTIVE,
@@ -127,6 +131,7 @@ class Context(cdk.Construct):
             idempotent_store.table.grant_read_write_data(self.microservice)
             domain_bus.grant_put_events_to(self.microservice)
             integration_bus.grant_put_events_to(self.microservice)
+            scheduler.grant_start_execution(self.microservice)
 
 
 
