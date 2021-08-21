@@ -365,6 +365,9 @@ def definition_to_jsonschema(
             }
         )
 
+    raise TypeError(f'unhandled: {_type}')
+
+
 PUBLISHER_CODE_TEMPLATE = \
 """
 import os
