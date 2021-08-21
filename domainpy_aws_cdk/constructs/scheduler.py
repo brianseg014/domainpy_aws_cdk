@@ -5,7 +5,6 @@ import tempfile
 
 from aws_cdk import core as cdk
 from aws_cdk import aws_iam as iam
-from aws_cdk import aws_apigateway as apigateway
 from aws_cdk import aws_events as events
 from aws_cdk import aws_lambda as lambda_
 from aws_cdk import aws_lambda_python as lambda_python
@@ -31,14 +30,6 @@ class EventScheduler(cdk.Construct):
 
         role = iam.Role(self, 'role',
             assumed_by=iam.ServicePrincipal('apigateway.amazonaws.com')
-        )
-
-        rest = apigateway.RestApi(self, 'rest',
-            rest_api_name=f'{share_prefix}EventScheduler',
-            deploy_options=apigateway.StageOptions(
-                stage_name='api',
-                tracing_enabled=True
-            )
         )
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -69,40 +60,9 @@ class EventScheduler(cdk.Construct):
         )
         scheduler.grant_start_execution(role)
         
-        schedule_resource = rest.root.add_resource('schedule')
-        schedule_resource.add_method(
-            'post', 
-            apigateway.AwsIntegration(
-                service='states',
-                action='StartExecution',
-                options=apigateway.IntegrationOptions(
-                    credentials_role=role,
-                    request_templates={
-                        'application/json': json.dumps({
-                            'stateMachineArn': scheduler.state_machine_arn,
-                            'input': "$util.escapeJavaScript($input.json('$'))"
-                        })
-                    },
-                    passthrough_behavior=apigateway.PassthroughBehavior.NEVER,
-                    integration_responses=[
-                        apigateway.IntegrationResponse(
-                            selection_pattern='200',
-                            status_code='200',
-                            response_templates={
-                                'application/json': '$input.json("$")'
-                            }
-                        )
-                    ]
-                )
-            ),
-            method_responses=[
-                apigateway.MethodResponse(status_code='200')
-            ]
-        )
-
-        cdk.CfnOutput(self, 'url',
-            export_name=f'{share_prefix}EventSchedulerUrl',
-            value=rest.url
+        cdk.CfnOutput(self, 'state-machine-arn',
+            export_name=f'{share_prefix}EventSchedulerArn',
+            value=scheduler.state_machine_arn
         )
 
 
