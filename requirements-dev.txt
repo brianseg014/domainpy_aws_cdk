@@ -1,0 +1,2 @@
+pytest==6.2.4
+aws_cdk.assertions==1.117.0
