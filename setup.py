@@ -14,7 +14,9 @@ setup(
     keywords=['domainpy', 'aws', 'cdk', 'ddd', 'event sourcing', 'CQRS'],
     install_requires=[
         'aws-cdk.core==1.117.0',
+        'aws-cdk.custom-resources==1.117.0',
         'aws-cdk.aws-dynamodb==1.117.0',
+        'aws-cdk.aws-elasticsearch==1.117.0',
         'aws-cdk.aws-events==1.117.0',
         'aws-cdk.aws-events-targets==1.117.0',
         'aws-cdk.aws-lambda==1.117.0',

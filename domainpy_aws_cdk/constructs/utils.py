@@ -17,7 +17,6 @@ class DomainpyLayerVersion(lambda_python.PythonLayerVersion):
             with open(os.path.join(tmp, 'requirements.txt'), 'w') as file:
                 file.write('aws-xray-sdk==2.8.0\n')
                 file.write('typeguard==2.12.1\n')
-                file.write('requests==2.26.0\n')
 
             super().__init__(
                 scope, id, 

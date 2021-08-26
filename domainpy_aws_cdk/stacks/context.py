@@ -1,5 +1,4 @@
 import typing
-import itertools
 
 from aws_cdk import core as cdk
 
@@ -61,7 +60,7 @@ class ContextMapComputeStack(cdk.Stack):
     ) -> None:
         super().__init__(scope, construct_id, **kwargs)
 
-        ContextMap(self, 'context_map',
+        self.context_map = ContextMap(self, 'context_map',
             entry=entry,
             domain_subscriptions=domain_subscriptions,
             domain_sources=domain_sources,
