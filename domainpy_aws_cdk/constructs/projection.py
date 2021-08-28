@@ -17,7 +17,7 @@ from aws_cdk import aws_elasticsearch as elasticsearch
 from aws_cdk import custom_resources
 
 
-class ElasticSearchInitializer:
+class ElasticSearchInitializerProps:
     def __init__(self, index: str, doc: str) -> None:
         self.index = index
         self.doc = doc
@@ -30,7 +30,7 @@ class ElasticSearchProjection(cdk.Construct):
         scope: cdk.Construct, 
         construct_id: str, 
         *, 
-        initializers: typing.Optional[typing.Sequence[ElasticSearchInitializer]] = None
+        initializers: typing.Optional[typing.Sequence[ElasticSearchInitializerProps]] = None
     ) -> None:
         super().__init__(scope, construct_id)
 
@@ -149,7 +149,7 @@ class ElasticSearchInitializer(cdk.Construct):
         construct_id: str, 
         *,
         url: str,
-        initializers: typing.Optional[typing.Sequence[ElasticSearchInitializer]],
+        initializers: typing.Optional[typing.Sequence[ElasticSearchInitializerProps]],
         domain_secret: secretsmanager.Secret
     ) -> None:
         super().__init__(scope, construct_id)
@@ -239,7 +239,7 @@ def handler(event, context):
     print(event)
 
     # Do nothing if it's not creating
-    if event['RequestType'] != 'Create':
+    if event['RequestType'] not in ('Create', 'Update'):
         print('Do nothing')
         return { 'IsComplete': True }
 

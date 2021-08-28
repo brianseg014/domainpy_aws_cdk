@@ -2,7 +2,7 @@ import typing
 
 from aws_cdk import core as cdk
 
-from domainpy_aws_cdk.constructs.projection import ElasticSearchProjection, ElasticSearchProjector, ElasticSearchInitializer
+from domainpy_aws_cdk.constructs.projection import ElasticSearchProjection, ElasticSearchProjector, ElasticSearchInitializerProps
 
 
 class ElasticSearchProjectionDataStack(cdk.Stack):
@@ -12,7 +12,7 @@ class ElasticSearchProjectionDataStack(cdk.Stack):
         scope: cdk.Construct, 
         construct_id: str,
         *,
-        initializers: typing.Optional[typing.Sequence[ElasticSearchInitializer]] = None,
+        initializers: typing.Optional[typing.Sequence[ElasticSearchInitializerProps]] = None,
         **kwargs
     ) -> None:
         super().__init__(scope, construct_id, **kwargs)
