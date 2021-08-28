@@ -129,8 +129,8 @@ class ElasticSearchProjector(cdk.Construct):
                     directory=tmp
                 ),
                 environment={
-                    'PROJECTION_URL': f'https://{projection.domain.domain_endpoint}',
-                    'PROJECTION_SECRET_NAME': projection.domain_credentials.secret_name
+                    'ELASTICSEARCH_URL': f'https://{projection.domain.domain_endpoint}',
+                    'ELASTICSEARCH_SECRET_NAME': projection.domain_credentials.secret_name
                 },
                 timeout=cdk.Duration.seconds(10),
                 tracing=lambda_.Tracing.ACTIVE,
