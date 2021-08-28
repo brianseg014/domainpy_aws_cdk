@@ -12,7 +12,7 @@ class ElasticSearchProjectionDataStack(cdk.Stack):
         scope: cdk.Construct, 
         construct_id: str,
         *,
-        initializers: typing.Optional[typing.Sequence[ElasticSearchInitializer]],
+        initializers: typing.Optional[typing.Sequence[ElasticSearchInitializer]] = None,
         **kwargs
     ) -> None:
         super().__init__(scope, construct_id, **kwargs)

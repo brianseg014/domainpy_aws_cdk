@@ -30,7 +30,7 @@ class ElasticSearchProjection(cdk.Construct):
         scope: cdk.Construct, 
         construct_id: str, 
         *, 
-        initializers: typing.Optional[typing.Sequence[ElasticSearchInitializer]]
+        initializers: typing.Optional[typing.Sequence[ElasticSearchInitializer]] = None
     ) -> None:
         super().__init__(scope, construct_id)
 
