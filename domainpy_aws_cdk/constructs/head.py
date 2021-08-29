@@ -10,12 +10,9 @@ from aws_cdk import aws_events as events
 from aws_cdk import aws_events_targets as events_targets
 from aws_cdk import aws_iam as iam
 from aws_cdk import aws_sns as sns
-from aws_cdk import aws_sns_subscriptions as sns_subscriptions
 from aws_cdk import aws_lambda as lambda_
-from aws_cdk import aws_lambda_python as lambda_python
 from aws_cdk import aws_s3 as s3
 from aws_cdk import aws_sqs as sqs
-from aws_cdk import aws_kinesisfirehose as kfirehose
 
 
 class TraceStore(cdk.Construct):
@@ -66,6 +63,8 @@ class Gateway(cdk.Construct):
     ) -> None:
         super().__init__(scope, construct_id)
 
+        self.resources: typing.Dict[str, apigateway.Resource] = {}
+
         self.rest = apigateway.RestApi(self, 'rest',
             rest_api_name=f'{share_prefix}Gateway',
             deploy_options=apigateway.StageOptions(
@@ -94,17 +93,26 @@ class Gateway(cdk.Construct):
             value=self.rest.url
         )
 
-    def add_publisher(self, publisher: Publisher) -> None:
-        publisher_topic = publisher.message.topic
-        attributes = publisher.message.attributes
+    def add_publisher(self, publisher: Publisher, resource_path: str, method: str) -> None:
+        publisher_topic = publisher.definition.topic
+        attributes = publisher.definition.attributes
         
         structs = {}
-        if isinstance(publisher.message, ApplicationCommandDefinition):
-            structs = { s.struct_name: s.struct_definitions for s in publisher.message.structs }
+        if isinstance(publisher.definition, ApplicationCommandDefinition):
+            structs = { s.struct_name: s.struct_definitions for s in publisher.definition.structs }
 
-        resource = self.rest.root.add_resource(publisher_topic)
+        resource_path_parts = resource_path.split('/')
+
+        resource = self.rest.root
+        for i,resource_path_part in enumerate(resource_path_parts):
+            resource_key = '/'.join(resource_path_parts[:i + 1])
+            if resource_key in self.resources:
+                resource = self.resources[resource_key]
+            else:
+                resource = self.resources[resource_key] = resource.add_resource(resource_path_part)
+
         resource.add_method(
-            'post',
+            method,
             apigateway.LambdaIntegration(publisher.function),
             request_models={
                 'application/json': apigateway.Model(self, f'{publisher_topic}RequestModel',
@@ -174,18 +182,18 @@ class Publisher(cdk.Construct):
         scope: cdk.Construct, 
         construct_id: str,
         *,
-        message: typing.Union[ApplicationCommandDefinition, IntegrationEventDefinition],
+        definition: typing.Union[ApplicationCommandDefinition, IntegrationEventDefinition],
         trace_store: TraceStore,
         share_prefix: str,
         domainpy_layer: lambda_.LayerVersion
     ) -> None:
         super().__init__(scope, construct_id)
-        self.message = message
+        self.definition = definition
 
         self.topic = sns.Topic(self, 'topic')
 
         self.function = lambda_.Function(self, 'function',
-            code=lambda_.Code.from_inline(self._build_publisher_code(message)),
+            code=lambda_.Code.from_inline(self._build_publisher_code(definition)),
             runtime=lambda_.Runtime.PYTHON_3_8,
             handler='index.handler',
             environment={
@@ -194,29 +202,29 @@ class Publisher(cdk.Construct):
             },
             layers=[domainpy_layer],
             tracing=lambda_.Tracing.ACTIVE,
-            description=f'[GATEWAY] Publish over sns topic the message for {message.topic}'
+            description=f'[GATEWAY] Publish over sns topic the message for {definition.topic}'
         )
         self.topic.grant_publish(self.function)
         trace_store.grant_read_write_data(self.function)
 
         cdk.CfnOutput(self, 'topic_arn', 
-            export_name=f'{share_prefix}{message.topic}',
+            export_name=f'{share_prefix}{definition.topic}',
             value=self.topic.topic_arn
         )
 
-    def _build_publisher_code(self, message: typing.Union[ApplicationCommandDefinition, IntegrationEventDefinition]):
-        message_definition = '\n'.join(self._build_message_code(message))
+    def _build_publisher_code(self, definition: typing.Union[ApplicationCommandDefinition, IntegrationEventDefinition]):
+        message_definition = '\n'.join(self._build_message_code(definition))
         return PUBLISHER_CODE_TEMPLATE.format(
             message_definition=message_definition,
-            message_topic=message.topic,
-            message_resolutions=message.resolutions
+            message_topic=definition.topic,
+            message_resolutions=definition.resolutions
         )
 
-    def _build_message_code(self, message: typing.Union[ApplicationCommandDefinition, IntegrationEventDefinition]) -> typing.Sequence[PythonLineCode]:
-        if isinstance(message, ApplicationCommandDefinition):
-            return self._build_application_command_code(message)
+    def _build_message_code(self, definition: typing.Union[ApplicationCommandDefinition, IntegrationEventDefinition]) -> typing.Sequence[PythonLineCode]:
+        if isinstance(definition, ApplicationCommandDefinition):
+            return self._build_application_command_code(definition)
         else:
-            return self._build_integration_event_code(message)
+            return self._build_integration_event_code(definition)
 
     def _build_message_definitions_code(self, definitions: typing.Sequence[Definition])  -> typing.Sequence[PythonLineCode]:
         return [

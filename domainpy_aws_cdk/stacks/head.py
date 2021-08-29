@@ -1,4 +1,5 @@
 import typing
+import dataclasses
 
 from aws_cdk import core as cdk
 
@@ -23,6 +24,13 @@ class MessageLakeStack(cdk.Stack):
         self.trace_store = TraceStore(self, 'tracestore')
     
 
+@dataclasses.dataclass
+class MessageProps:
+    definition: typing.Union[ApplicationCommandDefinition, IntegrationEventDefinition]
+    resource_path: str
+    method: str
+
+
 class GatewayBusStack(cdk.Stack):
 
     def __init__(
@@ -30,7 +38,7 @@ class GatewayBusStack(cdk.Stack):
         scope: cdk.Construct, 
         construct_id: str, 
         *,
-        messages: typing.Sequence[typing.Union[ApplicationCommandDefinition, IntegrationEventDefinition]],
+        messages: typing.Sequence[MessageProps],
         message_lake_stack: MessageLakeStack,
         share_prefix: str,
         **kwargs
@@ -39,16 +47,18 @@ class GatewayBusStack(cdk.Stack):
 
         domainpy_layer = DomainpyLayerVersion(self, 'domainpy')
 
-        gateway = Gateway(self, 'gateway', share_prefix=share_prefix)
+        self.gateway = Gateway(self, 'gateway', share_prefix=share_prefix)
 
         for message in messages:
-            gateway.add_publisher(
-                Publisher(self, message.topic,
-                    message=message,
+            self.gateway.add_publisher(
+                Publisher(self, message.definition.topic,
+                    definition=message.definition,
                     trace_store=message_lake_stack.trace_store,
                     share_prefix=share_prefix,
                     domainpy_layer=domainpy_layer
-                )
+                ),
+                resource_path=message.resource_path,
+                method=message.method
             )
     
         Resolver(self, 'resolver',
