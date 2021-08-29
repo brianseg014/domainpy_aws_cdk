@@ -424,9 +424,11 @@ def handler(event, context):
     payload = json.loads(event['body'])
     if 'pathParameters' in event:
         path_parameters = event['pathParameters']
-        for key,value in path_parameters.items():
-            if key not in payload:
-                payload[key] = value
+
+        if path_parameters is not None:
+            for key,value in path_parameters.items():
+                if key not in payload:
+                    payload[key] = value
 
     if 'trace_id' in payload:
         trace_id = payload.pop('trace_id')
