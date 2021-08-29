@@ -6,6 +6,7 @@ import shutil
 
 from aws_cdk import core as cdk
 from aws_cdk import aws_iam as iam
+from aws_cdk import aws_dynamodb as dynamodb
 from aws_cdk import aws_events as events
 from aws_cdk import aws_events_targets as events_targets
 from aws_cdk import aws_lambda as lambda_
@@ -15,6 +16,82 @@ from aws_cdk import aws_sqs as sqs
 from aws_cdk import aws_secretsmanager as secretsmanager
 from aws_cdk import aws_elasticsearch as elasticsearch
 from aws_cdk import custom_resources
+
+
+
+class DynamoDBProjection(cdk.Construct):
+
+    def __init__(self, scope: cdk.Construct, construct_id: str, *, projection_id: str):
+        super().__init__(scope, construct_id)
+
+        self.table = dynamodb.Table(self, 'table',
+            partition_key={ 'name': projection_id, 'type': dynamodb.AttributeType.STRING },
+            billing_mode=dynamodb.BillingMode.PAY_PER_REQUEST,
+            removal_policy=cdk.RemovalPolicy.DESTROY
+        )
+
+
+class DynamoDBProjector(cdk.Construct):
+
+    def __init__(
+        self, 
+        scope: cdk.Construct, 
+        construct_id: str, 
+        *, 
+        entry: str,
+        domain_subscriptions: typing.Sequence[str],
+        domain_sources: typing.Sequence[str],
+        projection: DynamoDBProjection,
+        share_prefix: str
+    ):
+        super().__init__(scope, construct_id)
+
+        domain_bus = events.EventBus.from_event_bus_name(
+            self, 'domain-bus', cdk.Fn.import_value(f'{share_prefix}DomainBusName')
+        )
+
+        self.dead_letter_queue = sqs.Queue(self, "dlq")
+        self.queue = sqs.Queue(self, "queue",
+            dead_letter_queue=sqs.DeadLetterQueue(
+                max_receive_count=20,
+                queue=self.dead_letter_queue
+            ),
+            visibility_timeout=cdk.Duration.seconds(30),
+            receive_message_wait_time=cdk.Duration.seconds(20)
+        )
+
+        if len(domain_subscriptions) > 0:
+            events.Rule(self, 'domain-rule',
+                event_bus=domain_bus,
+                event_pattern=events.EventPattern(
+                    detail_type=domain_subscriptions,
+                    source=domain_sources
+                ),
+                targets=[
+                    events_targets.SqsQueue(
+                        self.queue, message=events.RuleTargetInput.from_event_path('$.detail')
+                    )
+                ]
+            )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            shutil.copytree(entry, tmp, dirs_exist_ok=True)
+            shutil.copytree('/Users/brianestrada/Offline/domainpy', os.path.join(tmp, 'domainpy'), dirs_exist_ok=True)
+
+            self.microservice = lambda_.DockerImageFunction(self, 'microservice',
+                code=lambda_.DockerImageCode.from_image_asset(
+                    directory=tmp
+                ),
+                environment={
+                    'DYNAMODB_TABLE_NAME': projection.table.table_name
+                },
+                timeout=cdk.Duration.seconds(10),
+                tracing=lambda_.Tracing.ACTIVE,
+                description='[PROJECTOR] Projects domain events into projection'
+            )
+            self.microservice.add_event_source(lambda_sources.SqsEventSource(self.queue))
+            self.microservice.add_event_source(lambda_sources.SqsEventSource(self.dead_letter_queue))
+            projection.table.grant_read_write_data(self.microservice)
 
 
 class ElasticSearchInitializerProps:

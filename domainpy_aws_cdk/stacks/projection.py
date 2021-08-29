@@ -2,7 +2,46 @@ import typing
 
 from aws_cdk import core as cdk
 
-from domainpy_aws_cdk.constructs.projection import ElasticSearchProjection, ElasticSearchProjector, ElasticSearchInitializerProps
+from domainpy_aws_cdk.constructs.projection import (
+    DynamoDBProjection,
+    DynamoDBProjector,
+    ElasticSearchInitializerProps,
+    ElasticSearchProjection, 
+    ElasticSearchProjector
+)
+
+
+class DynamoDBProjectionDataStack(cdk.Stack):
+
+    def __init__(self, scope: cdk.Construct, construct_id: str, *, projection_id: str, **kwargs):
+        super().__init__(scope, construct_id, **kwargs)
+
+        self.projection = DynamoDBProjection(self, 'projection', projection_id=projection_id)
+
+
+class DynamoDBProjectorComputeStack(cdk.Stack):
+
+    def __init__(
+        self, 
+        scope: cdk.Construct, 
+        construct_id: str, 
+        *, 
+        entry: str,
+        domain_subscriptions: typing.Sequence[str],
+        domain_sources: typing.Sequence[str],
+        data_stack: DynamoDBProjectionDataStack,
+        share_prefix: str,
+        **kwargs
+    ):
+        super().__init__(scope, construct_id, **kwargs)
+
+        self.projector = DynamoDBProjector(self, 'projector',
+            entry=entry,
+            domain_subscriptions=domain_subscriptions,
+            domain_sources=domain_sources,
+            projection=data_stack.projection,
+            share_prefix=share_prefix
+        )
 
 
 class ElasticSearchProjectionDataStack(cdk.Stack):
