@@ -422,6 +422,12 @@ def handler(event, context):
     trace_id = str(uuid.uuid4())
 
     payload = json.loads(event['body'])
+    if 'pathParameters' in event:
+        path_parameters = event['pathParameters']
+        for key,value in path_parameters.items():
+            if key not in payload:
+                payload[key] = value
+
     if 'trace_id' in payload:
         trace_id = payload.pop('trace_id')
 
