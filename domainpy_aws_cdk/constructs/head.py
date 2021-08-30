@@ -93,7 +93,56 @@ class Gateway(cdk.Construct):
             value=self.rest.url
         )
 
+    def add_proxy(self, proxy: Proxy, resource_path: str, method: str, proxy_url: str):
+        resource_path_parts = resource_path.split('/')
+
+        proxy_topic = proxy.definition.topic
+        attributes = proxy.definition.attributes
+
+        resource = self.rest.root
+        for i,resource_path_part in enumerate(resource_path_parts):
+            resource_key = '/'.join(resource_path_parts[:i + 1])
+            if resource_key in self.resources:
+                resource = self.resources[resource_key]
+            else:
+                resource = self.resources[resource_key] = resource.add_resource(resource_path_part)
+
+        resource.add_method(
+            method,
+            apigateway.HttpIntegration(
+                url=proxy_url,
+                http_method=method,
+                proxy=True
+            ),
+            request_models={
+                'application/json': apigateway.Model(self, f'{proxy_topic}RequestModel',
+                    rest_api=self.rest,
+                    schema=apigateway.JsonSchema(
+                        schema=apigateway.JsonSchemaVersion.DRAFT4,
+                        type=apigateway.JsonSchemaType.OBJECT,
+                        properties={
+                            a.attribute_name: definition_to_jsonschema(a, [])
+                            for a in attributes
+                        }
+                    ),
+                    content_type='application/json',
+                    model_name=proxy_topic
+                ),
+            },
+            method_responses=[
+                apigateway.MethodResponse(
+                    status_code='200',
+                    response_models={
+                        'application/json': self.response_model
+                    }
+                )
+            ]
+        )
+
     def add_publisher(self, publisher: Publisher, resource_path: str, method: str) -> None:
+        if method not in ('post', 'put', 'delete'):
+            raise ValueError('only post, put and delete method could be used: ' + resource_path)
+
         publisher_topic = publisher.definition.topic
         attributes = publisher.definition.attributes
         
@@ -153,6 +202,13 @@ class Struct:
 
 
 @dataclasses.dataclass(frozen=True)
+class QueryDefinition:
+    topic: str
+    version: int
+    attributes: typing.Sequence[Definition]
+
+
+@dataclasses.dataclass(frozen=True)
 class ApplicationCommandDefinition:
     topic: str
     version: int
@@ -173,6 +229,19 @@ class IntegrationEventDefinition:
 
 
 PythonLineCode = str
+
+
+class Proxy(cdk.Construct):
+
+    def __init__(
+        self, 
+        scope: cdk.Construct, 
+        construct_id: str, 
+        *, 
+        definition: typing.Union[ApplicationCommandDefinition, IntegrationEventDefinition]
+    ) -> None:
+        super().__init__(scope, construct_id)
+        self.definition = definition
 
 
 class Publisher(cdk.Construct):
