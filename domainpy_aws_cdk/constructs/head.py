@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import typing
+import re
 import dataclasses
 
 from aws_cdk import core as cdk
@@ -52,6 +53,9 @@ class MessageLake(cdk.Construct):
         return self.bucket.grant_write(grantee)
 
 
+PATH_PARAMETER_PATTERN = re.compile('{(?P<param>\w+)}')
+
+
 class Gateway(cdk.Construct):
 
     def __init__(
@@ -99,6 +103,8 @@ class Gateway(cdk.Construct):
         proxy_topic = proxy.definition.topic
         attributes = proxy.definition.attributes
 
+        path_parameters = []
+
         resource = self.rest.root
         for i,resource_path_part in enumerate(resource_path_parts):
             resource_key = '/'.join(resource_path_parts[:i + 1])
@@ -107,11 +113,21 @@ class Gateway(cdk.Construct):
             else:
                 resource = self.resources[resource_key] = resource.add_resource(resource_path_part)
 
+            path_parameter_matcher = PATH_PARAMETER_PATTERN.match(resource_path_part)
+            if path_parameter_matcher is not None:
+                path_parameters.append(path_parameter_matcher.group('param'))
+
         resource.add_method(
             method,
             apigateway.HttpIntegration(
                 url=proxy_url,
                 http_method=method,
+                options=apigateway.IntegrationOptions(
+                    request_parameters={
+                        f'integration.request.path.{path_parameter}': f"'method.request.path.{path_parameter}'"
+                        for path_parameter in path_parameters
+                    }
+                ),
                 proxy=True
             ),
             request_models={
@@ -133,7 +149,7 @@ class Gateway(cdk.Construct):
                 apigateway.MethodResponse(
                     status_code='200',
                     response_models={
-                        'application/json': self.response_model
+                        'application/json': apigateway.Model.EMPTY_MODEL
                     }
                 )
             ]
@@ -414,11 +430,28 @@ class Resolver(cdk.Construct):
         )
 
 
+OPTIONAL_PATTERN = re.compile('typing.Optional\[(?P<inner_type>\w+)\]')
+
 def definition_to_jsonschema(
     definition: Definition, 
     structs: typing.Dict[str, typing.Sequence[Definition]]
 ) -> apigateway.JsonSchema:
     _type = definition.attribute_type
+    
+    _jsonschema = python_type_to_jsonschema(_type, structs)
+    if _jsonschema is not None:
+        return _jsonschema
+
+    match = OPTIONAL_PATTERN.match(_type)
+    if match is not None:
+        _jsonschema = python_type_to_jsonschema(match.group('inner_type'), structs)
+        if _jsonschema is not None:
+            return _jsonschema
+
+    raise TypeError(f'unhandled: {_type}')
+
+
+def python_type_to_jsonschema(_type: str, structs: typing.Dict[str, typing.Sequence[Definition]]):
     if _type == 'str':
         return apigateway.JsonSchema(type=apigateway.JsonSchemaType.STRING)
 
@@ -442,8 +475,7 @@ def definition_to_jsonschema(
             }
         )
 
-    raise TypeError(f'unhandled: {_type}')
-
+    return None
 
 PUBLISHER_CODE_TEMPLATE = \
 """
