@@ -32,6 +32,7 @@ class MethodProps:
     resource_path: str
     http_method: str
     proxy_url: typing.Optional[str] = None
+    not_available: bool = False
 
 
 class GatewayStack(cdk.Stack):
@@ -53,7 +54,12 @@ class GatewayStack(cdk.Stack):
         self.gateway = Gateway(self, 'gateway', share_prefix=share_prefix)
 
         for method in methods:
-            if method.proxy_url is not None:
+            if method.not_available:
+                self.gateway.add_mock_as_temporary_unavailable(
+                    resource_path=method.resource_path,
+                    method=method.http_method
+                )
+            elif method.proxy_url is not None:
                 self.gateway.add_proxy(
                     Proxy(self, method.definition.topic, 
                         definition=method.definition

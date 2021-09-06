@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import typing
 import re
+import json
 import dataclasses
 
 from aws_cdk import core as cdk
@@ -204,6 +205,36 @@ class Gateway(cdk.Construct):
             ]
         )
 
+    def add_mock_as_temporary_unavailable(self, resource_path: str, method: str) -> None:
+        resource_path_parts = resource_path.split('/')
+
+        resource = self.rest.root
+        for i,resource_path_part in enumerate(resource_path_parts):
+            resource_key = '/'.join(resource_path_parts[:i + 1])
+            if resource_key in self.resources:
+                resource = self.resources[resource_key]
+            else:
+                resource = self.resources[resource_key] = resource.add_resource(resource_path_part)
+
+        resource.add_method(method, apigateway.MockIntegration(
+            request_templates={
+                'application/json': json.dumps({ "statusCode": 503 })
+            },
+            integration_responses=[
+                apigateway.IntegrationResponse(
+                    status_code='503'
+                )
+            ]
+        ),
+        method_responses=[
+            apigateway.MethodResponse(
+                status_code='503',
+                response_models={
+                    'application/json': apigateway.Model.EMPTY_MODEL
+                }
+            )
+        ])
+
 
 @dataclasses.dataclass(frozen=True)
 class Definition:
@@ -285,6 +316,7 @@ class Publisher(cdk.Construct):
                 'PUBLISHER_TOPIC_ARN': self.topic.topic_arn,
                 'TRACE_STORE_TABLE_NAME': trace_store.table_name
             },
+            timeout=cdk.Duration.seconds(30),
             layers=[domainpy_layer],
             tracing=lambda_.Tracing.ACTIVE,
             description=f'[GATEWAY] Publish over sns topic the message for {definition.topic}'
@@ -480,6 +512,7 @@ def python_type_to_jsonschema(_type: str, structs: typing.Dict[str, typing.Seque
 PUBLISHER_CODE_TEMPLATE = \
 """
 import os
+import time
 import uuid
 import json
 import typing
@@ -489,28 +522,12 @@ import datetime
 from aws_xray_sdk.core import patch_all
 patch_all()
 
-from domainpy.application import (
-    ApplicationCommand,
-    IntegrationEvent,
-    SuccessIntegrationEvent,
-    FailureIntegrationEvent
-)
-from domainpy.infrastructure import (
-    record_fromdict,
-    MessageType,
-    Mapper, 
-    Transcoder, 
-    AwsSimpleNotificationServicePublisher, 
-    TraceStore, 
-    TraceResolution, 
-    DynamoDBTraceRecordManager
-)
+from domainpy.application import ApplicationCommand, IntegrationEvent, SuccessIntegrationEvent, FailureIntegrationEvent
+from domainpy.infrastructure import record_fromdict, MessageType, Mapper, Transcoder, AwsSimpleNotificationServicePublisher, TraceStore, TraceResolution, DynamoDBTraceRecordManager
 from domainpy.utils import Bus
 
 PUBLISHER_TOPIC_ARN = os.getenv('PUBLISHER_TOPIC_ARN')
 TRACE_STORE_TABLE_NAME = os.getenv('TRACE_STORE_TABLE_NAME')
-
-# logging.getLogger().setLevel(logging.INFO)
 
 transcoder=Transcoder()
 mapper = Mapper(transcoder=transcoder)
@@ -518,42 +535,51 @@ mapper = Mapper(transcoder=transcoder)
 @mapper.register
 {message_definition}
 
+trace_store_manager = DynamoDBTraceRecordManager(TRACE_STORE_TABLE_NAME)
+trace_store = TraceStore(trace_store_manager, Bus())
 
 def handler(event, context):
-    trace_id = str(uuid.uuid4())
+    query_string_parameters = event.get('queryStringParameters', None) or {{}}
+
+    sync = query_string_parameters.get('sync', 'true') == 'true'
+
+    trace_id = query_string_parameters.get('trace_id', str(uuid.uuid4()))
 
     payload = json.loads(event['body'])
     if 'pathParameters' in event:
         path_parameters = event['pathParameters']
-
         if path_parameters is not None:
             for key,value in path_parameters.items():
                 if key not in payload:
                     payload[key] = value
 
-    if 'trace_id' in payload:
-        trace_id = payload.pop('trace_id')
-
-    logging.info('Handle event with trace: %s: %s', trace_id, json.dumps(event))
-
     try:
         message = transcoder.decode(
             dict(
-                timestamp=datetime.datetime.timestamp(datetime.datetime.now()),
-                trace_id=trace_id,
-                payload=payload
-            ), 
+                timestamp=datetime.datetime.timestamp(datetime.datetime.now()), trace_id=trace_id, payload=payload
+            ),
             {message_topic}
         )
-
-        publish(trace_id, message, {message_resolutions})
     except Exception as error:
-        logging.exception('Mapping error: When handling event: %s', json.dumps(event))
-        return {{
-            'statusCode': 500,
-            'isBase64Encoded': False,
-            'body': f'Some error occurred. Contact the system administrator. Message: {message_topic} and Trace: {{trace_id}}'
-        }}
+        return {{ 'statusCode': 400, 'isBase64Encoded': False, 'body': str(error) }}
+
+    publish(trace_id, message, {message_resolutions})
+    
+    body = {{ 'trace_id': trace_id }}
+
+    if sync:
+        resolution = None
+        while resolution is None:
+            trace_contexts = tuple(trace_store_manager.get_trace_contexts(trace_id))
+            if trace_store.is_all_trace_context_resolved(trace_contexts):
+                resolution = 'success' if trace_store.is_all_trace_context_resolved_success(trace_contexts) else 'failure'
+            else:
+                time.sleep(0.1)
+
+        body.update({{
+            'resolution': resolution,
+            'errors': list(trace_store.get_trace_errors(trace_contexts))
+        }})
 
     return {{
         'statusCode': 200,
@@ -561,9 +587,7 @@ def handler(event, context):
             'Content-Type': 'application/json'
         }},
         'isBase64Encoded': False,
-        'body': json.dumps({{
-            'trace_id': trace_id
-        }})
+        'body': json.dumps(body)
     }}
 
 
@@ -578,8 +602,6 @@ def publish(
     publisher = AwsSimpleNotificationServicePublisher(PUBLISHER_TOPIC_ARN, mapper)
     publisher.publish(_message)
     
-    trace_store_manager = DynamoDBTraceRecordManager(TRACE_STORE_TABLE_NAME)
-    trace_store = TraceStore(trace_store_manager, Bus())
     trace_store.store_in_progress(trace_id, _record, resolutions)
 """
 
@@ -631,4 +653,67 @@ def handler(event, context):
         trace_store.store_context_failure(trace_id, context, error)
 
     return { "done": True }
+"""
+
+GET_TRACE_RESOLUTION = """
+import json
+import boto3
+from boto3.dynamodb.types import TypeSerializer, TypeDeserializer
+
+TRACE_STORE_TABLE_NAME = os.getenv('TRACE_STORE_TABLE_NAME')
+
+
+serializer = TypeSerializer()
+deserializer = TypeDeserializer()
+
+def handler(aws_event, context):
+    resource = aws_event['resource']
+    http_method = aws_event['httpMethod']
+
+    if resource == '/traces/{trace_id}/resolution':
+        if http_method == 'GET':
+            return trace_resolution_item_get_handler(aws_event, context)
+        else:
+            return unhanlded(aws_event, context)
+    else:
+        return unhanlded(aws_event, context)
+
+def unhanlded(aws_event, context):
+    return {
+        "isBase64Encoded": False,
+        "statusCode": 500,
+        "body": 'Unhandled'
+    }
+
+def trace_resolution_item_get_handler(aws_event, context):
+    path_parameters = aws_event['pathParameters']
+    trace_id = path_parameters['trace_id']
+
+    client = boto3.client('dynamodb')
+
+    result = client.get_item(
+        TableName=TRACE_STORE_TABLE_NAME,
+        Key={
+            'trace_id': serializer.serialize(trace_id)
+        },
+        ProjectionExpression='resolution, contexts_resolutions, contexts_resolutions_unexpected'
+    )
+
+    if 'Item' in result:
+        item = result['Item']
+        return {
+            "isBase64Encoded": False,
+            "statusCode": 200,
+            "body": json.dumps({
+                'resolution': deserializer.deserialize(item['resolution']),
+                'contexts_resolutions': deserializer.deserialize(item['contexts_resolutions']),
+                'contexts_resolutions_unexpected': deserializer.deserialize(item['contexts_resolutions_unexpected']),
+            })
+        }
+    else:
+        return {
+            "isBase64Encoded": False,
+            "statusCode": 404,
+            "body": ''
+        }
 """
