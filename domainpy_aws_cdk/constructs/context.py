@@ -57,8 +57,7 @@ class Context(cdk.Construct):
         *,
         entry: str,
         gateway_subscriptions: typing.Sequence[str],
-        integration_subscriptions: typing.Sequence[str],
-        integration_sources: typing.Sequence[str],
+        integration_subscriptions: typing.Dict[str, typing.Sequence[str]],
         event_store: EventStore,
         idempotent_store: IdempotentStore,
         share_prefix: str
@@ -92,18 +91,19 @@ class Context(cdk.Construct):
             )
 
         if len(integration_subscriptions) > 0:
-            events.Rule(self, 'integration-rule',
-                event_bus=integration_bus,
-                event_pattern=events.EventPattern(
-                    detail_type=integration_subscriptions,
-                    source=integration_sources
-                ),
-                targets=[
-                    events_targets.SqsQueue(
-                        self.queue, message=events.RuleTargetInput.from_event_path('$.detail')
-                    )
-                ]
-            )
+            for context,integration_events_names in integration_subscriptions.items():
+                events.Rule(self, f'{context}-integration-rule',
+                    event_bus=integration_bus,
+                    event_pattern=events.EventPattern(
+                        detail_type=integration_events_names,
+                        source=[context]
+                    ),
+                    targets=[
+                        events_targets.SqsQueue(
+                            self.queue, message=events.RuleTargetInput.from_event_path('$.detail')
+                        )
+                    ]
+                )
 
         with tempfile.TemporaryDirectory() as tmp:
             shutil.copytree(entry, tmp, dirs_exist_ok=True)
@@ -143,10 +143,8 @@ class ContextMap(cdk.Construct):
         construct_id: str,
         *,
         entry: str,
-        domain_subscriptions: typing.Sequence[str],
-        domain_sources: typing.Sequence[str],
-        integration_subscriptions: typing.Sequence[str],
-        integration_sources: typing.Sequence[str],
+        domain_subscriptions: typing.Dict[str, typing.Sequence[str]],
+        integration_subscriptions: typing.Dict[str, typing.Sequence[str]],
         context: Context,
         share_prefix: str
     ) -> None:
@@ -170,32 +168,34 @@ class ContextMap(cdk.Construct):
         )
 
         if len(domain_subscriptions) > 0:
-            events.Rule(self, 'domain-rule',
-                event_bus=domain_bus,
-                event_pattern=events.EventPattern(
-                    detail_type=domain_subscriptions,
-                    source=domain_sources
-                ),
-                targets=[
-                    events_targets.SqsQueue(
-                        self.queue, message=events.RuleTargetInput.from_event_path('$.detail')
-                    )
-                ]
-            )
+            for context,domain_events_names in domain_subscriptions.items():
+                events.Rule(self, f'{context}-domain-rule',
+                    event_bus=domain_bus,
+                    event_pattern=events.EventPattern(
+                        detail_type=domain_events_names,
+                        source=[context]
+                    ),
+                    targets=[
+                        events_targets.SqsQueue(
+                            self.queue, message=events.RuleTargetInput.from_event_path('$.detail')
+                        )
+                    ]
+                )
 
         if len(integration_subscriptions) > 0:
-            events.Rule(self, 'integration-rule',
-                event_bus=integration_bus,
-                event_pattern=events.EventPattern(
-                    detail_type=integration_subscriptions,
-                    source=integration_sources
-                ),
-                targets=[
-                    events_targets.SqsQueue(
-                        self.queue, message=events.RuleTargetInput.from_event_path('$.detail')
-                    )
-                ]
-            )
+            for context,integration_events_names in integration_subscriptions.items():
+                events.Rule(self, f'{context}-integration-rule',
+                    event_bus=integration_bus,
+                    event_pattern=events.EventPattern(
+                        detail_type=integration_events_names,
+                        source=[context]
+                    ),
+                    targets=[
+                        events_targets.SqsQueue(
+                            self.queue, message=events.RuleTargetInput.from_event_path('$.detail')
+                        )
+                    ]
+                )
 
         with tempfile.TemporaryDirectory() as tmp:
             shutil.copytree(entry, tmp, dirs_exist_ok=True)

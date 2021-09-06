@@ -23,8 +23,7 @@ class ContextComputeStack(cdk.Stack):
         *,
         entry: str,
         gateway_subscriptions: typing.Sequence[str],
-        integration_subscriptions: typing.Sequence[str],
-        integration_sources: typing.Sequence[str],
+        integration_subscriptions: typing.Dict[str, typing.Sequence[str]],
         data_stack: ContextDataStack,
         share_prefix: str,
         **kwargs
@@ -35,7 +34,6 @@ class ContextComputeStack(cdk.Stack):
             entry=entry,
             gateway_subscriptions=gateway_subscriptions, 
             integration_subscriptions=integration_subscriptions,
-            integration_sources=integration_sources,
             event_store=data_stack.event_store, 
             idempotent_store=data_stack.idempotent_store,
             share_prefix=share_prefix
@@ -50,10 +48,8 @@ class ContextMapComputeStack(cdk.Stack):
         construct_id: str,
         *,
         entry: str,
-        domain_subscriptions: typing.Sequence[str],
-        domain_sources: typing.Sequence[str],
-        integration_subscriptions: typing.Sequence[str],
-        integration_sources: typing.Sequence[str],
+        domain_subscriptions: typing.Dict[str, typing.Sequence[str]],
+        integration_subscriptions: typing.Dict[str, typing.Sequence[str]],
         context_compute_stack: ContextComputeStack,
         share_prefix: str,
         **kwargs
@@ -63,9 +59,7 @@ class ContextMapComputeStack(cdk.Stack):
         self.context_map = ContextMap(self, 'context_map',
             entry=entry,
             domain_subscriptions=domain_subscriptions,
-            domain_sources=domain_sources,
             integration_subscriptions=integration_subscriptions,
-            integration_sources=integration_sources,
             context=context_compute_stack.context,
             share_prefix=share_prefix
         )

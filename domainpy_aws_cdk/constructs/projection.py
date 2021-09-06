@@ -39,8 +39,7 @@ class DynamoDBProjector(cdk.Construct):
         construct_id: str, 
         *, 
         entry: str,
-        domain_subscriptions: typing.Sequence[str],
-        domain_sources: typing.Sequence[str],
+        domain_subscriptions: typing.Dict[str, typing.Sequence[str]],
         projection: DynamoDBProjection,
         share_prefix: str
     ):
@@ -61,18 +60,19 @@ class DynamoDBProjector(cdk.Construct):
         )
 
         if len(domain_subscriptions) > 0:
-            events.Rule(self, 'domain-rule',
-                event_bus=domain_bus,
-                event_pattern=events.EventPattern(
-                    detail_type=domain_subscriptions,
-                    source=domain_sources
-                ),
-                targets=[
-                    events_targets.SqsQueue(
-                        self.queue, message=events.RuleTargetInput.from_event_path('$.detail')
-                    )
-                ]
-            )
+            for context,domain_events_names in domain_subscriptions.items():
+                events.Rule(self, f'{context}-domain-rule',
+                    event_bus=domain_bus,
+                    event_pattern=events.EventPattern(
+                        detail_type=domain_events_names,
+                        source=[context]
+                    ),
+                    targets=[
+                        events_targets.SqsQueue(
+                            self.queue, message=events.RuleTargetInput.from_event_path('$.detail')
+                        )
+                    ]
+                )
 
         with tempfile.TemporaryDirectory() as tmp:
             shutil.copytree(entry, tmp, dirs_exist_ok=True)
@@ -162,8 +162,7 @@ class ElasticSearchProjector(cdk.Construct):
         construct_id: str,
         *,
         entry: str,
-        domain_subscriptions: typing.Sequence[str],
-        domain_sources: typing.Sequence[str],
+        domain_subscriptions: typing.Dict[str, typing.Sequence[str]],
         projection: ElasticSearchProjection,
         share_prefix: str
     ) -> None:
@@ -184,18 +183,19 @@ class ElasticSearchProjector(cdk.Construct):
         )
 
         if len(domain_subscriptions) > 0:
-            events.Rule(self, 'domain-rule',
-                event_bus=domain_bus,
-                event_pattern=events.EventPattern(
-                    detail_type=domain_subscriptions,
-                    source=domain_sources
-                ),
-                targets=[
-                    events_targets.SqsQueue(
-                        self.queue, message=events.RuleTargetInput.from_event_path('$.detail')
-                    )
-                ]
-            )
+            for context,domain_events_names in domain_subscriptions.items():
+                events.Rule(self, f'{context}-domain-rule',
+                    event_bus=domain_bus,
+                    event_pattern=events.EventPattern(
+                        detail_type=domain_events_names,
+                        source=[context]
+                    ),
+                    targets=[
+                        events_targets.SqsQueue(
+                            self.queue, message=events.RuleTargetInput.from_event_path('$.detail')
+                        )
+                    ]
+                )
 
         with tempfile.TemporaryDirectory() as tmp:
             shutil.copytree(entry, tmp, dirs_exist_ok=True)

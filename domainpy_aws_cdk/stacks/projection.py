@@ -27,8 +27,7 @@ class DynamoDBProjectorComputeStack(cdk.Stack):
         construct_id: str, 
         *, 
         entry: str,
-        domain_subscriptions: typing.Sequence[str],
-        domain_sources: typing.Sequence[str],
+        domain_subscriptions: typing.Dict[str, typing.Sequence[str]],
         data_stack: DynamoDBProjectionDataStack,
         share_prefix: str,
         **kwargs
@@ -38,7 +37,6 @@ class DynamoDBProjectorComputeStack(cdk.Stack):
         self.projector = DynamoDBProjector(self, 'projector',
             entry=entry,
             domain_subscriptions=domain_subscriptions,
-            domain_sources=domain_sources,
             projection=data_stack.projection,
             share_prefix=share_prefix
         )
@@ -69,8 +67,7 @@ class ElasticSearchProjectorComputeStack(cdk.Stack):
         construct_id: str,
         *,
         entry: str,
-        domain_subscriptions: typing.Sequence[str],
-        domain_sources: typing.Sequence[str],
+        domain_subscriptions: typing.Dict[str, typing.Sequence[str]],
         data_stack: ElasticSearchProjectionDataStack,
         share_prefix: str,
         **kwargs
@@ -80,7 +77,6 @@ class ElasticSearchProjectorComputeStack(cdk.Stack):
         self.projector = ElasticSearchProjector(self, 'projector',
             entry=entry,
             domain_subscriptions=domain_subscriptions,
-            domain_sources=domain_sources,
             projection=data_stack.projection,
             share_prefix=share_prefix
         )
