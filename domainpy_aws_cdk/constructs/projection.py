@@ -90,7 +90,6 @@ class DynamoDBProjector(cdk.Construct):
                 description='[PROJECTOR] Projects domain events into projection'
             )
             self.microservice.add_event_source(lambda_sources.SqsEventSource(self.queue))
-            self.microservice.add_event_source(lambda_sources.SqsEventSource(self.dead_letter_queue))
             projection.table.grant_read_write_data(self.microservice)
 
 
@@ -214,7 +213,6 @@ class ElasticSearchProjector(cdk.Construct):
                 description='[PROJECTOR] Projects domain events into projection'
             )
             self.microservice.add_event_source(lambda_sources.SqsEventSource(self.queue))
-            self.microservice.add_event_source(lambda_sources.SqsEventSource(self.dead_letter_queue))
             projection.domain_credentials.grant_read(self.microservice)
 
 

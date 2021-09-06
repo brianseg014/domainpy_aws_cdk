@@ -125,7 +125,6 @@ class Context(cdk.Construct):
                 description='[CONTEXT] Handles commands and integrations and emits domain events'
             )
             self.microservice.add_event_source(lambda_sources.SqsEventSource(self.queue))
-            self.microservice.add_event_source(lambda_sources.SqsEventSource(self.dead_letter_queue))
 
             event_store.table.grant_read_write_data(self.microservice)
             idempotent_store.table.grant_read_write_data(self.microservice)
@@ -213,6 +212,5 @@ class ContextMap(cdk.Construct):
                 description='[CONTEXT MAP] Listen for other contexts messages and transforms into known context message'
             )
             self.microservice.add_event_source(lambda_sources.SqsEventSource(self.queue))
-            self.microservice.add_event_source(lambda_sources.SqsEventSource(self.dead_letter_queue))
 
             context.queue.grant_send_messages(self.microservice)
