@@ -91,12 +91,12 @@ class Context(cdk.Construct):
             )
 
         if len(integration_subscriptions) > 0:
-            for context,integration_events_names in integration_subscriptions.items():
-                events.Rule(self, f'{context}-integration-rule',
+            for integration_context,integration_events_names in integration_subscriptions.items():
+                events.Rule(self, f'{integration_context}-integration-rule',
                     event_bus=integration_bus,
                     event_pattern=events.EventPattern(
                         detail_type=integration_events_names,
-                        source=[context]
+                        source=[integration_context]
                     ),
                     targets=[
                         events_targets.SqsQueue(
@@ -168,12 +168,12 @@ class ContextMap(cdk.Construct):
         )
 
         if len(domain_subscriptions) > 0:
-            for context,domain_events_names in domain_subscriptions.items():
-                events.Rule(self, f'{context}-domain-rule',
+            for domain_context,domain_events_names in domain_subscriptions.items():
+                events.Rule(self, f'{domain_context}-domain-rule',
                     event_bus=domain_bus,
                     event_pattern=events.EventPattern(
                         detail_type=domain_events_names,
-                        source=[context]
+                        source=[domain_context]
                     ),
                     targets=[
                         events_targets.SqsQueue(
@@ -183,12 +183,12 @@ class ContextMap(cdk.Construct):
                 )
 
         if len(integration_subscriptions) > 0:
-            for context,integration_events_names in integration_subscriptions.items():
-                events.Rule(self, f'{context}-integration-rule',
+            for integration_context,integration_events_names in integration_subscriptions.items():
+                events.Rule(self, f'{integration_context}-integration-rule',
                     event_bus=integration_bus,
                     event_pattern=events.EventPattern(
                         detail_type=integration_events_names,
-                        source=[context]
+                        source=[integration_context]
                     ),
                     targets=[
                         events_targets.SqsQueue(

@@ -60,12 +60,12 @@ class DynamoDBProjector(cdk.Construct):
         )
 
         if len(domain_subscriptions) > 0:
-            for context,domain_events_names in domain_subscriptions.items():
-                events.Rule(self, f'{context}-domain-rule',
+            for domain_context,domain_events_names in domain_subscriptions.items():
+                events.Rule(self, f'{domain_context}-domain-rule',
                     event_bus=domain_bus,
                     event_pattern=events.EventPattern(
                         detail_type=domain_events_names,
-                        source=[context]
+                        source=[domain_context]
                     ),
                     targets=[
                         events_targets.SqsQueue(
@@ -183,12 +183,12 @@ class ElasticSearchProjector(cdk.Construct):
         )
 
         if len(domain_subscriptions) > 0:
-            for context,domain_events_names in domain_subscriptions.items():
-                events.Rule(self, f'{context}-domain-rule',
+            for domain_context,domain_events_names in domain_subscriptions.items():
+                events.Rule(self, f'{domain_context}-domain-rule',
                     event_bus=domain_bus,
                     event_pattern=events.EventPattern(
                         detail_type=domain_events_names,
-                        source=[context]
+                        source=[domain_context]
                     ),
                     targets=[
                         events_targets.SqsQueue(
