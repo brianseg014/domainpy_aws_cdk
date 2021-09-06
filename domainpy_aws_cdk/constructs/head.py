@@ -562,7 +562,7 @@ def handler(event, context):
         }},
         'isBase64Encoded': False,
         'body': json.dumps({{
-            'traceId': trace_id
+            'trace_id': trace_id
         }})
     }}
 
