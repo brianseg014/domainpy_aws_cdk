@@ -51,7 +51,10 @@ class GatewayStack(cdk.Stack):
 
         domainpy_layer = DomainpyLayerVersion(self, 'domainpy')
 
-        self.gateway = Gateway(self, 'gateway', share_prefix=share_prefix)
+        self.gateway = Gateway(self, 'gateway', 
+            trace_store=message_lake_stack.trace_store,
+            share_prefix=share_prefix
+        )
 
         for method in methods:
             if method.not_available:

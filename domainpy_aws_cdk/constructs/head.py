@@ -27,13 +27,6 @@ class TraceStore(cdk.Construct):
             billing_mode=dynamodb.BillingMode.PAY_PER_REQUEST
         )
 
-    @property
-    def table_name(self):
-        return self.table.table_name
-
-    def grant_read_write_data(self, grantee: iam.IGrantable) -> iam.Grant:
-        return self.table.grant_read_write_data(grantee)
-
 
 class MessageLake(cdk.Construct):
 
@@ -46,13 +39,6 @@ class MessageLake(cdk.Construct):
             removal_policy=cdk.RemovalPolicy.DESTROY
         )
 
-    @property
-    def bucket_arn(self):
-        return self.bucket.bucket_arn
-
-    def grant_write(self, grantee: iam.IGrantable) -> iam.Grant:
-        return self.bucket.grant_write(grantee)
-
 
 PATH_PARAMETER_PATTERN = re.compile('{(?P<param>\w+)}')
 
@@ -64,6 +50,7 @@ class Gateway(cdk.Construct):
         scope: cdk.Construct, 
         construct_id: str, 
         *,
+        trace_store: TraceStore,
         share_prefix: str
     ) -> None:
         super().__init__(scope, construct_id)
@@ -78,13 +65,29 @@ class Gateway(cdk.Construct):
             )
         )
 
+        self.trace_function = lambda_.Function(self, 'trace',
+            code=lambda_.Code.from_inline(GET_TRACE_RESOLUTION),
+            runtime=lambda_.Runtime.PYTHON_3_8,
+            handler='index.handler',
+            environment={
+                'TRACE_STORE_TABLE_NAME': trace_store.table.table_name
+            },
+            tracing=lambda_.Tracing.ACTIVE,
+            description='[GATEWAY] Returns information abount command trace'
+        )
+        trace_store.table.grant_read_data(self.trace_function)
+
+        traces_resource = self.rest.root.add_resource('_traces')
+        trace_item_resource = traces_resource.add_resource('{trace_id}')
+        trace_item_resource.add_method('get', apigateway.LambdaIntegration(self.trace_function))
+
         self.response_model = apigateway.Model(self, f'response-model',
             rest_api=self.rest,
             schema=apigateway.JsonSchema(
                 schema=apigateway.JsonSchemaVersion.DRAFT4,
                 type=apigateway.JsonSchemaType.OBJECT,
                 properties={
-                    'traceId': apigateway.JsonSchema(
+                    'trace_id': apigateway.JsonSchema(
                         type=apigateway.JsonSchemaType.STRING
                     )
                 }
@@ -314,7 +317,7 @@ class Publisher(cdk.Construct):
             handler='index.handler',
             environment={
                 'PUBLISHER_TOPIC_ARN': self.topic.topic_arn,
-                'TRACE_STORE_TABLE_NAME': trace_store.table_name
+                'TRACE_STORE_TABLE_NAME': trace_store.table.table_name
             },
             timeout=cdk.Duration.seconds(30),
             layers=[domainpy_layer],
@@ -322,7 +325,7 @@ class Publisher(cdk.Construct):
             description=f'[GATEWAY] Publish over sns topic the message for {definition.topic}'
         )
         self.topic.grant_publish(self.function)
-        trace_store.grant_read_write_data(self.function)
+        trace_store.table.grant_read_write_data(self.function)
 
         cdk.CfnOutput(self, 'topic_arn', 
             export_name=f'{share_prefix}{definition.topic}',
@@ -437,14 +440,14 @@ class Resolver(cdk.Construct):
             handler='index.handler',
             environment={
                 'RESOLVER_TOPIC_ARN': self.topic.topic_arn,
-                'TRACE_STORE_TABLE_NAME': trace_store.table_name
+                'TRACE_STORE_TABLE_NAME': trace_store.table.table_name
             },
             layers=[domainpy_layer],
             tracing=lambda_.Tracing.ACTIVE,
             description=f'[GATEWAY] Resolver'
         )
         self.topic.grant_publish(function)
-        trace_store.grant_read_write_data(function)
+        trace_store.table.grant_read_write_data(function)
 
         dlq = sqs.Queue(self, 'resolver-dlq')
         events.Rule(self, 'integartion-rule',
@@ -656,6 +659,7 @@ def handler(event, context):
 """
 
 GET_TRACE_RESOLUTION = """
+import os
 import json
 import boto3
 from boto3.dynamodb.types import TypeSerializer, TypeDeserializer
@@ -670,7 +674,7 @@ def handler(aws_event, context):
     resource = aws_event['resource']
     http_method = aws_event['httpMethod']
 
-    if resource == '/traces/{trace_id}/resolution':
+    if resource == '/traces/{trace_id}':
         if http_method == 'GET':
             return trace_resolution_item_get_handler(aws_event, context)
         else:
@@ -696,18 +700,26 @@ def trace_resolution_item_get_handler(aws_event, context):
         Key={
             'trace_id': serializer.serialize(trace_id)
         },
-        ProjectionExpression='resolution, contexts_resolutions, contexts_resolutions_unexpected'
+        ProjectionExpression='resolution, contexts_resolutions'
     )
 
     if 'Item' in result:
         item = result['Item']
+
+        resolution = deserializer.deserialize(item['resolution'])
+        contexts_resolutions = deserializer.deserialize(item['contexts_resolutions'])
+        completed = len([True for cr in contexts_resolutions.values() if cr['resolution'] != 'pending'])
+        expected = len(contexts_resolutions)
+        errors = [ cr['error'] for cr in contexts_resolutions.values() if cr['error'] is not None ]
+
         return {
             "isBase64Encoded": False,
             "statusCode": 200,
             "body": json.dumps({
-                'resolution': deserializer.deserialize(item['resolution']),
-                'contexts_resolutions': deserializer.deserialize(item['contexts_resolutions']),
-                'contexts_resolutions_unexpected': deserializer.deserialize(item['contexts_resolutions_unexpected']),
+                'resolution': resolution,
+                'completed': completed,
+                'expected': expected,
+                'errors': errors
             })
         }
     else:
