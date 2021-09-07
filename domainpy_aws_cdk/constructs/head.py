@@ -128,12 +128,16 @@ class Gateway(cdk.Construct):
                 http_method=method,
                 options=apigateway.IntegrationOptions(
                     request_parameters={
-                        f'integration.request.path.{path_parameter}': f"'method.request.path.{path_parameter}'"
+                        f'integration.request.path.{path_parameter}': f"method.request.path.{path_parameter}"
                         for path_parameter in path_parameters
                     }
                 ),
                 proxy=True
             ),
+            request_parameters={
+                f'method.request.path.{path_parameter}': True
+                for path_parameter in path_parameters
+            },
             request_models={
                 'application/json': apigateway.Model(self, f'{proxy_topic}RequestModel',
                     rest_api=self.rest,
