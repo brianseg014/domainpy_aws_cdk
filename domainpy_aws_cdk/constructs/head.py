@@ -582,7 +582,7 @@ def handler(event, context):
         }})
 
     return {{
-        'statusCode': 200,
+        'statusCode': 202,
         'headers': {{
             'Content-Type': 'application/json'
         }},
