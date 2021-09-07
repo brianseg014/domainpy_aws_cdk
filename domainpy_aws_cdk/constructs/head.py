@@ -468,6 +468,11 @@ class Resolver(cdk.Construct):
             ]
         )
 
+        cdk.CfnOutput(self, 'resolver',
+            export_name=f'{share_prefix}ResolverTopicArn',
+            value=self.topic.topic_arn
+        )
+
 
 OPTIONAL_PATTERN = re.compile('typing.Optional\[(?P<inner_type>\w+)\]')
 
