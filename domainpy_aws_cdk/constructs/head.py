@@ -577,7 +577,7 @@ def handler(event, context):
 
     publish(trace_id, message, {message_resolutions})
     
-    body = {{ 'trace_id': trace_id }}
+    body = {{ 'trace_id': trace_id, 'href': f'/_traces/{{trace_id}}' }}
 
     if sync:
         resolution = None
@@ -683,7 +683,7 @@ def handler(aws_event, context):
     resource = aws_event['resource']
     http_method = aws_event['httpMethod']
 
-    if resource == '/traces/{trace_id}':
+    if resource == '/_traces/{trace_id}':
         if http_method == 'GET':
             return trace_resolution_item_get_handler(aws_event, context)
         else:
