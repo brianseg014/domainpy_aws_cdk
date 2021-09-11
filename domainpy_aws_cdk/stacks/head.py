@@ -1,93 +1,55 @@
 import typing
-import dataclasses
 
 from aws_cdk import core as cdk
 
-from domainpy_aws_cdk.constructs.utils import DomainpyLayerVersion
 from domainpy_aws_cdk.constructs.head import (
-    Gateway,
-    Proxy,
-    QueryDefinition,
-    ApplicationCommandDefinition,
-    IntegrationEventDefinition,
-    MessageLake,
+    MessageLake, 
     TraceStore, 
-    Publisher,
-    Resolver
+    GatewayResourceProps, 
+    GatewayMethodProps,
+    Gateway,
+    CommandBus
 )
 
 
-class MessageLakeStack(cdk.Stack):
+class GatewayDataStack(cdk.Stack):
 
-    def __init__(self, scope: cdk.Construct, construct_id: str, **kwargs) -> None:
+    def __init__(self, scope: cdk.Construct, construct_id: str, **kwargs):
         super().__init__(scope, construct_id, **kwargs)
 
         self.message_lake = MessageLake(self, 'messagelake')
         self.trace_store = TraceStore(self, 'tracestore')
-    
-
-@dataclasses.dataclass(frozen=True)
-class MethodProps:
-    definition: typing.Union[QueryDefinition, ApplicationCommandDefinition, IntegrationEventDefinition]
-    resource_path: str
-    http_method: str
-    proxy_url: typing.Optional[str] = None
-    not_available: bool = False
 
 
-class GatewayStack(cdk.Stack):
+class GatewayComputeStack(cdk.Stack):
 
     def __init__(
         self, 
         scope: cdk.Construct, 
         construct_id: str, 
-        *,
-        methods: typing.Sequence[MethodProps],
-        message_lake_stack: MessageLakeStack,
+        *, 
+        entry: str,
+        resources: typing.Sequence[GatewayResourceProps], 
+        data_stack: GatewayDataStack,
         share_prefix: str,
+        index: str = 'app',
+        handler: str = 'handler',
+        message_topic_header_key: str = 'x-message-topic',
         **kwargs
-    ) -> None:
+    ):
         super().__init__(scope, construct_id, **kwargs)
 
-        domainpy_layer = DomainpyLayerVersion(self, 'domainpy')
-
-        self.gateway = Gateway(self, 'gateway', 
-            trace_store=message_lake_stack.trace_store,
+        self.command_bus = CommandBus(self, 'commandbus', 
             share_prefix=share_prefix
         )
 
-        for method in methods:
-            if method.not_available:
-                self.gateway.add_mock_as_temporary_unavailable(
-                    resource_path=method.resource_path,
-                    method=method.http_method
-                )
-            elif method.proxy_url is not None:
-                self.gateway.add_proxy(
-                    Proxy(self, method.definition.topic, 
-                        definition=method.definition
-                    ),
-                    resource_path=method.resource_path,
-                    method=method.http_method,
-                    proxy_url=method.proxy_url
-                )
-            elif isinstance(method.definition, (ApplicationCommandDefinition, IntegrationEventDefinition)):
-                self.gateway.add_publisher(
-                    Publisher(self, method.definition.topic,
-                        definition=method.definition,
-                        trace_store=message_lake_stack.trace_store,
-                        share_prefix=share_prefix,
-                        domainpy_layer=domainpy_layer
-                    ),
-                    resource_path=method.resource_path,
-                    method=method.http_method
-                )
-            else:
-                raise Exception(f'unhandled method: {method}')
-    
-        Resolver(self, 'resolver',
-            trace_store=message_lake_stack.trace_store,
-            message_lake=message_lake_stack.message_lake,
+        self.gateway = Gateway(self, 'gateway',
+            entry=entry,
+            resources=resources,
+            command_bus=self.command_bus,
+            trace_store=data_stack.trace_store,
+            index=index,
+            handler=handler,
             share_prefix=share_prefix,
-            domainpy_layer=domainpy_layer
+            message_topic_header_key=message_topic_header_key
         )

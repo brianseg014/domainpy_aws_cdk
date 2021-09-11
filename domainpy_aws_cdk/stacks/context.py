@@ -1,6 +1,7 @@
 import typing
 
 from aws_cdk import core as cdk
+from aws_cdk import aws_lambda as lambda_
 
 from domainpy_aws_cdk.constructs.context import EventStore, IdempotentStore, Context, ContextMap
 
@@ -26,6 +27,9 @@ class ContextComputeStack(cdk.Stack):
         integration_subscriptions: typing.Dict[str, typing.Sequence[str]],
         data_stack: ContextDataStack,
         share_prefix: str,
+        index: str = 'app',
+        handler: str = 'handler',
+        layers: typing.Optional[typing.Sequence[lambda_.LayerVersion]] = None,
         **kwargs
     ) -> None:
         super().__init__(scope, construct_id, **kwargs)
@@ -36,7 +40,10 @@ class ContextComputeStack(cdk.Stack):
             integration_subscriptions=integration_subscriptions,
             event_store=data_stack.event_store, 
             idempotent_store=data_stack.idempotent_store,
-            share_prefix=share_prefix
+            share_prefix=share_prefix,
+            index=index,
+            handler=handler,
+            layers=layers
         )
 
 

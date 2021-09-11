@@ -9,11 +9,14 @@ from aws_cdk import aws_dynamodb as dynamodb
 from aws_cdk import aws_events as events
 from aws_cdk import aws_events_targets as events_targets
 from aws_cdk import aws_lambda as lambda_
+from aws_cdk import aws_lambda_python as lambda_python
 from aws_cdk import aws_lambda_event_sources as lambda_sources
 from aws_cdk import aws_sqs as sqs
 from aws_cdk import aws_sns as sns
 from aws_cdk import aws_sns_subscriptions as sns_subscriptions
 from aws_cdk import aws_stepfunctions as stepfunctions
+
+from domainpy_aws_cdk.constructs.utils import DomainpyLayerVersion
 
 
 class EventStore(cdk.Construct):
@@ -21,10 +24,7 @@ class EventStore(cdk.Construct):
     def __init__(self, scope: cdk.Construct, construct_id: str) -> None:
         super().__init__(scope, construct_id)
 
-        self.table = self.create_table()
-
-    def create_table(self):
-        return dynamodb.Table(self, 'table',
+        self.table = dynamodb.Table(self, 'table',
             partition_key={ 'name': 'stream_id', 'type': dynamodb.AttributeType.STRING },
             sort_key={ 'name': 'number', 'type': dynamodb.AttributeType.NUMBER },
             billing_mode=dynamodb.BillingMode.PAY_PER_REQUEST,
@@ -37,10 +37,7 @@ class IdempotentStore(cdk.Construct):
     def __init__(self, scope: cdk.Construct, construct_id: str) -> None:
         super().__init__(scope, construct_id)
 
-        self.table = self.create_table()
-
-    def create_table(self):
-        return dynamodb.Table(self, 'table',
+        self.table = dynamodb.Table(self, 'table',
             partition_key={ 'name': 'trace_id', 'type': dynamodb.AttributeType.STRING },
             sort_key={ 'name': 'topic', 'type': dynamodb.AttributeType.STRING },
             billing_mode=dynamodb.BillingMode.PAY_PER_REQUEST,
@@ -60,10 +57,16 @@ class Context(cdk.Construct):
         integration_subscriptions: typing.Dict[str, typing.Sequence[str]],
         event_store: EventStore,
         idempotent_store: IdempotentStore,
-        share_prefix: str
+        share_prefix: str,
+        index: str = 'app',
+        handler: str = 'handler',
+        layers: typing.Optional[typing.Sequence[lambda_.LayerVersion]] = None
     ) -> None:
         super().__init__(scope, construct_id)
 
+        command_bus = events.EventBus.from_event_bus_name(
+            self, 'command-bus', cdk.Fn.import_value(f'{share_prefix}CommandBusName')
+        )
         domain_bus = events.EventBus.from_event_bus_name(
             self, 'domain-bus', cdk.Fn.import_value(f'{share_prefix}DomainBusName')
         )
@@ -84,10 +87,17 @@ class Context(cdk.Construct):
             receive_message_wait_time=cdk.Duration.seconds(20)
         )
 
-        for message_name in gateway_subscriptions:
-            topic = sns.Topic.from_topic_arn(self, message_name, cdk.Fn.import_value(message_name))
-            topic.add_subscription(
-                sns_subscriptions.SqsSubscription(self.queue, raw_message_delivery=True)
+        if len(gateway_subscriptions) > 0:
+            events.Rule(self, 'gateway-rule',
+                event_bus=command_bus,
+                event_pattern=events.EventPattern(
+                    detail_type=gateway_subscriptions
+                ),
+                targets=[
+                    events_targets.SqsQueue(
+                        self.queue, message=events.RuleTargetInput.from_event_path('$.detail')
+                    )
+                ]
             )
 
         if len(integration_subscriptions) > 0:
@@ -105,32 +115,36 @@ class Context(cdk.Construct):
                     ]
                 )
 
-        with tempfile.TemporaryDirectory() as tmp:
-            shutil.copytree(entry, tmp, dirs_exist_ok=True)
-            shutil.copytree('/Users/brianestrada/Offline/domainpy', os.path.join(tmp, 'domainpy'), dirs_exist_ok=True)
+        _layers = layers
+        if layers is None:
+            _layers = []
 
-            self.microservice = lambda_.DockerImageFunction(self, 'microservice',
-                code=lambda_.DockerImageCode.from_image_asset(
-                    directory=tmp
-                ),
-                environment={
-                    'IDEMPOTENT_TABLE_NAME': idempotent_store.table.table_name,
-                    'EVENT_STORE_TABLE_NAME': event_store.table.table_name,
-                    'DOMAIN_EVENT_BUS_NAME': domain_bus.event_bus_name,
-                    'INTEGRATION_EVENT_BUS_NAME': integration_bus.event_bus_name,
-                    'EVENT_SCHEDULER_ARN': scheduler.state_machine_arn
-                },
-                timeout=cdk.Duration.seconds(10),
-                tracing=lambda_.Tracing.ACTIVE,
-                description='[CONTEXT] Handles commands and integrations and emits domain events'
-            )
-            self.microservice.add_event_source(lambda_sources.SqsEventSource(self.queue))
+        domainpy_layer = DomainpyLayerVersion(self, 'domainpy')
+        self.microservice = lambda_python.PythonFunction(self, 'microservice',
+            entry=entry,
+            runtime=lambda_.Runtime.PYTHON_3_8,
+            index=index,
+            handler=handler,
+            environment={
+                'IDEMPOTENT_TABLE_NAME': idempotent_store.table.table_name,
+                'EVENT_STORE_TABLE_NAME': event_store.table.table_name,
+                'DOMAIN_EVENT_BUS_NAME': domain_bus.event_bus_name,
+                'INTEGRATION_EVENT_BUS_NAME': integration_bus.event_bus_name,
+                'EVENT_SCHEDULER_ARN': scheduler.state_machine_arn
+            },
+            memory_size=1024,
+            timeout=cdk.Duration.seconds(10),
+            tracing=lambda_.Tracing.ACTIVE,
+            layers=[domainpy_layer, *_layers],
+            description='[CONTEXT] Handles commands and integrations and emits domain events'
+        )
+        self.microservice.add_event_source(lambda_sources.SqsEventSource(self.queue))
 
-            event_store.table.grant_read_write_data(self.microservice)
-            idempotent_store.table.grant_read_write_data(self.microservice)
-            domain_bus.grant_put_events_to(self.microservice)
-            integration_bus.grant_put_events_to(self.microservice)
-            scheduler.grant_start_execution(self.microservice)
+        event_store.table.grant_read_write_data(self.microservice)
+        idempotent_store.table.grant_read_write_data(self.microservice)
+        domain_bus.grant_put_events_to(self.microservice)
+        integration_bus.grant_put_events_to(self.microservice)
+        scheduler.grant_start_execution(self.microservice)
 
 
 

@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-import typing
 import re
-import json
+import typing
 import dataclasses
+import jsii.errors
 
 from aws_cdk import core as cdk
 from aws_cdk import aws_apigateway as apigateway
@@ -11,11 +11,12 @@ from aws_cdk import aws_dynamodb as dynamodb
 from aws_cdk import aws_events as events
 from aws_cdk import aws_events_targets as events_targets
 from aws_cdk import aws_iam as iam
-from aws_cdk import aws_sns as sns
 from aws_cdk import aws_lambda as lambda_
+from aws_cdk import aws_lambda_python as lambda_python
 from aws_cdk import aws_s3 as s3
-from aws_cdk import aws_sqs as sqs
 
+from domainpy_aws_cdk.constructs.utils import DomainpyLayerVersion, LambdaIntegrationNoPermission
+from domainpy_aws_cdk.constructs.tail import EventBus
 
 class TraceStore(cdk.Construct):
 
@@ -40,7 +41,32 @@ class MessageLake(cdk.Construct):
         )
 
 
+class CommandBus(cdk.Construct):
+
+    def __init__(self, scope: cdk.Construct, construct_id: str, *, share_prefix: str):
+        super().__init__(scope, construct_id)
+
+        self.bus = events.EventBus(self, 'bus')
+
+        cdk.CfnOutput(self, 'event_bus_name',
+            export_name=f'{share_prefix}CommandBusName',
+            value=self.bus.event_bus_name
+        )
+
+
 PATH_PARAMETER_PATTERN = re.compile('{(?P<param>\w+)}')
+
+
+@dataclasses.dataclass
+class GatewayMethodProps:
+    topic: str
+    http_method: str
+
+
+@dataclasses.dataclass
+class GatewayResourceProps:
+    resource_path: str
+    methods: typing.Tuple[GatewayMethodProps]
 
 
 class Gateway(cdk.Construct):
@@ -50,12 +76,79 @@ class Gateway(cdk.Construct):
         scope: cdk.Construct, 
         construct_id: str, 
         *,
+        entry: str,
+        resources: typing.Sequence[GatewayResourceProps],
+        command_bus: CommandBus,
         trace_store: TraceStore,
-        share_prefix: str
-    ) -> None:
+        share_prefix: str,
+        index: str = 'app',
+        handler: str = 'handler',
+        message_topic_header_key: str = 'x-message-topic'
+    ):
         super().__init__(scope, construct_id)
 
-        self.resources: typing.Dict[str, apigateway.Resource] = {}
+        integration_bus = events.EventBus.from_event_bus_name(
+            self, 'integration-bus', cdk.Fn.import_value(f'{share_prefix}IntegrationBusName')
+        )
+
+        domainpy_layer = DomainpyLayerVersion(self, 'domainpy')
+        self.gateway_function = lambda_python.PythonFunction(self, 'gateway',
+            entry=entry,
+            runtime=lambda_.Runtime.PYTHON_3_8,
+            index=index,
+            handler=handler,
+            environment={
+                'TRACE_STORE_TABLE_NAME': trace_store.table.table_name,
+                'COMMAND_BUS_NAME': command_bus.bus.event_bus_name
+            },
+            memory_size=512,
+            layers=[domainpy_layer],
+            timeout=cdk.Duration.seconds(30),
+            tracing=lambda_.Tracing.ACTIVE,
+            description='[GATEWAY] Entry point for all platform requests'
+        )
+        trace_store.table.grant_read_write_data(self.gateway_function)
+        command_bus.bus.grant_put_events_to(self.gateway_function)
+
+        self.resolver_function = lambda_.Function(self, 'resolver',
+            code=lambda_.Code.from_inline(RESOLVER_CODE),
+            runtime=lambda_.Runtime.PYTHON_3_8,
+            handler='index.handler',
+            environment={
+                'TRACE_STORE_TABLE_NAME': trace_store.table.table_name
+            },
+            memory_size=512,
+            layers=[domainpy_layer],
+            tracing=lambda_.Tracing.ACTIVE,
+            description='[GATEWAY] Updates trace store with integrations'
+        )
+        trace_store.table.grant_read_write_data(self.resolver_function)
+
+        events.Rule(self, 'integartion-rule',
+            event_bus=integration_bus,
+            event_pattern=events.EventPattern(
+                version=['0']
+            ),
+            targets=[
+                events_targets.LambdaFunction(
+                    self.resolver_function,
+                    event=events.RuleTargetInput.from_event_path('$.detail')
+                )
+            ]
+        )
+
+        self.trace_function = lambda_.Function(self, 'trace',
+            code=lambda_.Code.from_inline(GET_TRACE_RESOLUTION_CODE),
+            runtime=lambda_.Runtime.PYTHON_3_8,
+            handler='index.handler',
+            environment={
+                'TRACE_STORE_TABLE_NAME': trace_store.table.table_name
+            },
+            layers=[domainpy_layer],
+            tracing=lambda_.Tracing.ACTIVE,
+            description='[GATEWAY] Returns information abount command trace'
+        )
+        trace_store.table.grant_read_data(self.trace_function)
 
         self.rest = apigateway.RestApi(self, 'rest',
             rest_api_name=f'{share_prefix}Gateway',
@@ -64,620 +157,100 @@ class Gateway(cdk.Construct):
                 tracing_enabled=True
             )
         )
-
-        self.trace_function = lambda_.Function(self, 'trace',
-            code=lambda_.Code.from_inline(GET_TRACE_RESOLUTION),
-            runtime=lambda_.Runtime.PYTHON_3_8,
-            handler='index.handler',
-            environment={
-                'TRACE_STORE_TABLE_NAME': trace_store.table.table_name
-            },
-            tracing=lambda_.Tracing.ACTIVE,
-            description='[GATEWAY] Returns information abount command trace'
+        # Due to policy length limits and with each endpoint grows
+        # the policy size, single permission is used 
+        self.gateway_function.add_permission('rest-invoke-permission',
+            principal=iam.ServicePrincipal('apigateway.amazonaws.com'),
+            action='lambda:InvokeFunction',
+            source_arn=self.rest.arn_for_execute_api()
         )
-        trace_store.table.grant_read_data(self.trace_function)
 
         traces_resource = self.rest.root.add_resource('_traces')
         trace_item_resource = traces_resource.add_resource('{trace_id}')
         trace_item_resource.add_method('get', apigateway.LambdaIntegration(self.trace_function))
 
-        self.response_model = apigateway.Model(self, f'response-model',
-            rest_api=self.rest,
-            schema=apigateway.JsonSchema(
-                schema=apigateway.JsonSchemaVersion.DRAFT4,
-                type=apigateway.JsonSchemaType.OBJECT,
-                properties={
-                    'trace_id': apigateway.JsonSchema(
-                        type=apigateway.JsonSchemaType.STRING
+        _resources: typing.Dict[str, apigateway.Resource] = {}
+        for resource_props in resources:
+            resource_path_parts = resource_props.resource_path.split('/')
+
+            path_parameters = []
+
+            resource = self.rest.root
+            for i,resource_path_part in enumerate(resource_path_parts):
+                resource_key = '/'.join(resource_path_parts[:i + 1])
+                if resource_key in _resources:
+                    resource = _resources[resource_key]
+                else:
+                    resource = _resources[resource_key] = resource.add_resource(resource_path_part)
+
+                path_parameter_matcher = PATH_PARAMETER_PATTERN.match(resource_path_part)
+                if path_parameter_matcher is not None:
+                    path_parameters.append(path_parameter_matcher.group('param'))
+
+            for method_props in resource_props.methods:
+                try:
+                    resource.add_method(
+                        method_props.http_method,
+                        LambdaIntegrationNoPermission(
+                            self.gateway_function,
+                            proxy=False,
+                            passthrough_behavior=apigateway.PassthroughBehavior.WHEN_NO_TEMPLATES,
+                            request_templates={
+                                'application/json': VTL_REQUEST_TEMPLATE.format(
+                                    message_topic_header_key=message_topic_header_key,
+                                    message_topic=method_props.topic
+                                )
+                            }
+                        ),
+                        method_responses=[
+                            apigateway.MethodResponse(status_code='200')
+                        ]
                     )
-                }
-            ),
-            content_type='application/json',
-            model_name='Response'
-        )
-
-        cdk.CfnOutput(self, 'url',
-            export_name=f'{share_prefix}GatewayUrl',
-            value=self.rest.url
-        )
-
-    def add_proxy(self, proxy: Proxy, resource_path: str, method: str, proxy_url: str):
-        resource_path_parts = resource_path.split('/')
-
-        proxy_topic = proxy.definition.topic
-        attributes = proxy.definition.attributes
-
-        path_parameters = []
-
-        resource = self.rest.root
-        for i,resource_path_part in enumerate(resource_path_parts):
-            resource_key = '/'.join(resource_path_parts[:i + 1])
-            if resource_key in self.resources:
-                resource = self.resources[resource_key]
-            else:
-                resource = self.resources[resource_key] = resource.add_resource(resource_path_part)
-
-            path_parameter_matcher = PATH_PARAMETER_PATTERN.match(resource_path_part)
-            if path_parameter_matcher is not None:
-                path_parameters.append(path_parameter_matcher.group('param'))
-
-        resource.add_method(
-            method,
-            apigateway.HttpIntegration(
-                url=proxy_url,
-                http_method=method,
-                options=apigateway.IntegrationOptions(
-                    request_parameters={
-                        f'integration.request.path.{path_parameter}': f"method.request.path.{path_parameter}"
-                        for path_parameter in path_parameters
-                    }
-                ),
-                proxy=True
-            ),
-            request_parameters={
-                f'method.request.path.{path_parameter}': True
-                for path_parameter in path_parameters
-            },
-            request_models={
-                'application/json': apigateway.Model(self, f'{proxy_topic}RequestModel',
-                    rest_api=self.rest,
-                    schema=apigateway.JsonSchema(
-                        schema=apigateway.JsonSchemaVersion.DRAFT4,
-                        type=apigateway.JsonSchemaType.OBJECT,
-                        properties={
-                            a.attribute_name: definition_to_jsonschema(a, [])
-                            for a in attributes
-                        }
-                    ),
-                    content_type='application/json',
-                    model_name=proxy_topic
-                ),
-            },
-            method_responses=[
-                apigateway.MethodResponse(
-                    status_code='200',
-                    response_models={
-                        'application/json': apigateway.Model.EMPTY_MODEL
-                    }
-                )
-            ]
-        )
-
-    def add_publisher(self, publisher: Publisher, resource_path: str, method: str) -> None:
-        if method not in ('post', 'put', 'delete'):
-            raise ValueError('only post, put and delete method could be used: ' + resource_path)
-
-        publisher_topic = publisher.definition.topic
-        attributes = publisher.definition.attributes
-        
-        structs = {}
-        if isinstance(publisher.definition, ApplicationCommandDefinition):
-            structs = { s.struct_name: s.struct_definitions for s in publisher.definition.structs }
-
-        resource_path_parts = resource_path.split('/')
-
-        resource = self.rest.root
-        for i,resource_path_part in enumerate(resource_path_parts):
-            resource_key = '/'.join(resource_path_parts[:i + 1])
-            if resource_key in self.resources:
-                resource = self.resources[resource_key]
-            else:
-                resource = self.resources[resource_key] = resource.add_resource(resource_path_part)
-
-        resource.add_method(
-            method,
-            apigateway.LambdaIntegration(publisher.function),
-            request_models={
-                'application/json': apigateway.Model(self, f'{publisher_topic}RequestModel',
-                    rest_api=self.rest,
-                    schema=apigateway.JsonSchema(
-                        schema=apigateway.JsonSchemaVersion.DRAFT4,
-                        type=apigateway.JsonSchemaType.OBJECT,
-                        properties={
-                            a.attribute_name: definition_to_jsonschema(a, structs)
-                            for a in attributes
-                        }
-                    ),
-                    content_type='application/json',
-                    model_name=publisher_topic
-                ),
-            },
-            method_responses=[
-                apigateway.MethodResponse(
-                    status_code='200',
-                    response_models={
-                        'application/json': self.response_model
-                    }
-                )
-            ]
-        )
-
-    def add_mock_as_temporary_unavailable(self, resource_path: str, method: str) -> None:
-        resource_path_parts = resource_path.split('/')
-
-        resource = self.rest.root
-        for i,resource_path_part in enumerate(resource_path_parts):
-            resource_key = '/'.join(resource_path_parts[:i + 1])
-            if resource_key in self.resources:
-                resource = self.resources[resource_key]
-            else:
-                resource = self.resources[resource_key] = resource.add_resource(resource_path_part)
-
-        resource.add_method(method, apigateway.MockIntegration(
-            request_templates={
-                'application/json': json.dumps({ "statusCode": 503 })
-            },
-            integration_responses=[
-                apigateway.IntegrationResponse(
-                    status_code='503'
-                )
-            ]
-        ),
-        method_responses=[
-            apigateway.MethodResponse(
-                status_code='503',
-                response_models={
-                    'application/json': apigateway.Model.EMPTY_MODEL
-                }
-            )
-        ])
-
-
-@dataclasses.dataclass(frozen=True)
-class Definition:
-    attribute_name: str
-    attribute_type: str
-
-
-@dataclasses.dataclass(frozen=True)
-class Struct:
-    struct_name: str
-    struct_definitions: typing.Sequence[Definition]
-
-
-@dataclasses.dataclass(frozen=True)
-class QueryDefinition:
-    topic: str
-    version: int
-    attributes: typing.Sequence[Definition]
-
-
-@dataclasses.dataclass(frozen=True)
-class ApplicationCommandDefinition:
-    topic: str
-    version: int
-    structs: typing.Sequence[Struct]
-    attributes: typing.Sequence[Definition]
-    resolutions: typing.Sequence[str]
-
-
-@dataclasses.dataclass(frozen=True)
-class IntegrationEventDefinition:
-    topic: str
-    version: int
-    context: str
-    resolve: str
-    error: typing.Optional[str]
-    attributes: typing.Sequence[Definition]
-    resolutions: typing.Sequence[str]
-
-
-PythonLineCode = str
-
-
-class Proxy(cdk.Construct):
-
-    def __init__(
-        self, 
-        scope: cdk.Construct, 
-        construct_id: str, 
-        *, 
-        definition: typing.Union[ApplicationCommandDefinition, IntegrationEventDefinition]
-    ) -> None:
-        super().__init__(scope, construct_id)
-        self.definition = definition
-
-
-class Publisher(cdk.Construct):
-
-    def __init__(
-        self, 
-        scope: cdk.Construct, 
-        construct_id: str,
-        *,
-        definition: typing.Union[ApplicationCommandDefinition, IntegrationEventDefinition],
-        trace_store: TraceStore,
-        share_prefix: str,
-        domainpy_layer: lambda_.LayerVersion
-    ) -> None:
-        super().__init__(scope, construct_id)
-        self.definition = definition
-
-        self.topic = sns.Topic(self, 'topic')
-
-        self.function = lambda_.Function(self, 'function',
-            code=lambda_.Code.from_inline(self._build_publisher_code(definition)),
-            runtime=lambda_.Runtime.PYTHON_3_8,
-            handler='index.handler',
-            environment={
-                'PUBLISHER_TOPIC_ARN': self.topic.topic_arn,
-                'TRACE_STORE_TABLE_NAME': trace_store.table.table_name
-            },
-            timeout=cdk.Duration.seconds(30),
-            layers=[domainpy_layer],
-            tracing=lambda_.Tracing.ACTIVE,
-            description=f'[GATEWAY] Publish over sns topic the message for {definition.topic}'
-        )
-        self.topic.grant_publish(self.function)
-        trace_store.table.grant_read_write_data(self.function)
-
-        cdk.CfnOutput(self, 'topic_arn', 
-            export_name=f'{share_prefix}{definition.topic}',
-            value=self.topic.topic_arn
-        )
-
-    def _build_publisher_code(self, definition: typing.Union[ApplicationCommandDefinition, IntegrationEventDefinition]):
-        message_definition = '\n'.join(self._build_message_code(definition))
-        return PUBLISHER_CODE_TEMPLATE.format(
-            message_definition=message_definition,
-            message_topic=definition.topic,
-            message_resolutions=definition.resolutions
-        )
-
-    def _build_message_code(self, definition: typing.Union[ApplicationCommandDefinition, IntegrationEventDefinition]) -> typing.Sequence[PythonLineCode]:
-        if isinstance(definition, ApplicationCommandDefinition):
-            return self._build_application_command_code(definition)
-        else:
-            return self._build_integration_event_code(definition)
-
-    def _build_message_definitions_code(self, definitions: typing.Sequence[Definition])  -> typing.Sequence[PythonLineCode]:
-        return [
-            d.attribute_name + ': ' + d.attribute_type for d in definitions
-        ]
-
-    def _build_application_command_struct_code(self, struct: Struct) -> typing.Sequence[PythonLineCode]:
-        struct_name = struct.struct_name
-        struct_definitions = struct.struct_definitions
-
-        body_lines = []
-        body_lines.extend([
-            f'class {struct_name}(ApplicationCommand.Struct):'
-        ])
-        body_lines.extend([
-            f'\t{d}'
-            for d in self._build_message_definitions_code(struct_definitions)
-        ])
-        return body_lines
-
-    def _build_application_command_code(self, command: ApplicationCommandDefinition) -> typing.Sequence[PythonLineCode]:
-        message_topic = command.topic
-        message_version = command.version
-
-        body_lines = []
-        body_lines.extend([
-            f'class {message_topic}(ApplicationCommand):',
-            f'\t__version__: int = {message_version}'
-        ])
-        
-        for struct in command.structs:
-            body_lines.extend([''])
-            body_lines.extend([
-                f'\t{l}'
-                for l in self._build_application_command_struct_code(struct)
-            ])
-
-        body_lines.extend([''])
-        body_lines.extend([
-            f'\t{l}'
-            for l in self._build_message_definitions_code(command.attributes)
-        ])
-
-        return body_lines
-
-    def _build_integration_event_code(self, integration: IntegrationEventDefinition) -> typing.Sequence[PythonLineCode]:
-        message_topic = integration.topic
-        message_version = integration.version
-        message_resolve = integration.resolve
-        message_error = integration.error
-        message_context = integration.context
-
-        body_lines = []
-        body_lines.extend([
-            f'class {message_topic}(IntegrationEvent):',
-            f'\t__version__: int = {message_version}',
-            f'\t__resolve__: str = "{message_resolve}"',
-            f'\t__error__: typing.Optional[str] = "{message_error}"',
-            f'\t__context__: str = "{message_context}"'
-        ])
-
-        body_lines.extend([''])
-        body_lines.extend([
-            f'\t{l}'
-            for l in self._build_message_definitions_code(integration.attributes)
-        ])
-
-        return body_lines
-
-
-class Resolver(cdk.Construct):
-
-    def __init__(
-        self, 
-        scope: cdk.Construct, 
-        construct_id: str, *,
-        trace_store: TraceStore, 
-        message_lake: MessageLake,
-        share_prefix: str,
-        domainpy_layer: lambda_.LayerVersion
-    ) -> None:
-        super().__init__(scope, construct_id)
-
-        integration_bus = events.EventBus.from_event_bus_name(
-            self, 'integration-bus', cdk.Fn.import_value(f'{share_prefix}IntegrationBusName')
-        )
-
-        self.topic = sns.Topic(self, 'topic')
-
-        function = lambda_.Function(self, 'function',
-            code=lambda_.Code.from_inline(RESOLVER_CODE),
-            runtime=lambda_.Runtime.PYTHON_3_8,
-            handler='index.handler',
-            environment={
-                'RESOLVER_TOPIC_ARN': self.topic.topic_arn,
-                'TRACE_STORE_TABLE_NAME': trace_store.table.table_name
-            },
-            layers=[domainpy_layer],
-            tracing=lambda_.Tracing.ACTIVE,
-            description=f'[GATEWAY] Resolver'
-        )
-        self.topic.grant_publish(function)
-        trace_store.table.grant_read_write_data(function)
-
-        dlq = sqs.Queue(self, 'resolver-dlq')
-        events.Rule(self, 'integartion-rule',
-            event_bus=integration_bus,
-            event_pattern=events.EventPattern(
-                version=['0']
-            ),
-            targets=[
-                events_targets.LambdaFunction(
-                    function,
-                    event=events.RuleTargetInput.from_event_path('$.detail'),
-                    dead_letter_queue=dlq
-                )
-            ]
-        )
-
-        cdk.CfnOutput(self, 'resolver',
-            export_name=f'{share_prefix}ResolverTopicArn',
-            value=self.topic.topic_arn
-        )
-
-
-OPTIONAL_PATTERN = re.compile('typing.Optional\[(?P<inner_type>\w+)\]')
-
-def definition_to_jsonschema(
-    definition: Definition, 
-    structs: typing.Dict[str, typing.Sequence[Definition]]
-) -> apigateway.JsonSchema:
-    _type = definition.attribute_type
-    
-    _jsonschema = python_type_to_jsonschema(_type, structs)
-    if _jsonschema is not None:
-        return _jsonschema
-
-    match = OPTIONAL_PATTERN.match(_type)
-    if match is not None:
-        _jsonschema = python_type_to_jsonschema(match.group('inner_type'), structs)
-        if _jsonschema is not None:
-            return _jsonschema
-
-    raise TypeError(f'unhandled: {_type}')
-
-
-def python_type_to_jsonschema(_type: str, structs: typing.Dict[str, typing.Sequence[Definition]]):
-    if _type == 'str':
-        return apigateway.JsonSchema(type=apigateway.JsonSchemaType.STRING)
-
-    if _type in ('int', 'float'):
-        return apigateway.JsonSchema(type=apigateway.JsonSchemaType.NUMBER)
-
-    if _type == 'bool':
-        return apigateway.JsonSchema(type=apigateway.JsonSchemaType.BOOLEAN)
-
-    _matches = ('Tuple', 'List', 'Sequence')
-    if any(m in _type for m in _matches):
-        return apigateway.JsonSchema(type=apigateway.JsonSchemaType.ARRAY)
-
-    if _type in structs:
-        _struct = structs[_type]
-        return apigateway.JsonSchema(
-            type=apigateway.JsonSchemaType.OBJECT,
-            properties={
-                a.attribute_name: definition_to_jsonschema(a, structs)
-                for a in _struct
-            }
-        )
-
-    return None
-
-PUBLISHER_CODE_TEMPLATE = \
+                except jsii.errors.JSIIError as error:
+                    raise jsii.errors.JSIIError(
+                        f'path {resource_props.resource_path} '
+                        f'method {method_props.http_method}: {str(error)}'
+                    ) from error
+
+
+VTL_REQUEST_TEMPLATE = """
+{{
+    "resource": "$context.resourcePath",
+    "path": "$context.path",
+    "httpMethod": "$context.httpMethod",
+    "headers": {{
+        "{message_topic_header_key}": "{message_topic}"
+        #if($input.params().header.size() > 0),#end
+        #foreach($param in $input.params().header.keySet())
+        "$param": "$input.params().header.get($param)"
+        #if($foreach.hasNext),#end
+        #end
+    }},
+    "queryStringParameters": {{
+        #foreach($param in $input.params().querystring.keySet())
+        "$param": "$input.params().querystring.get($param)"
+        #if($foreach.hasNext),#end
+        #end
+    }},
+    "pathParameters": {{
+        #foreach($param in $input.params().path.keySet())
+        "$param": "$input.params().path.get($param)"
+        #if($foreach.hasNext),#end
+        #end
+    }},
+    "parameters": $input.json('$'),
+    "body": "$util.escapeJavaScript($input.body)"
+}}
 """
-import os
-import time
-import uuid
+
+GET_TRACE_RESOLUTION_CODE = """
 import json
-import typing
-import logging
-import datetime
 
-from aws_xray_sdk.core import patch_all
-patch_all()
-
-from domainpy.application import ApplicationCommand, IntegrationEvent, SuccessIntegrationEvent, FailureIntegrationEvent
-from domainpy.infrastructure import record_fromdict, MessageType, Mapper, Transcoder, AwsSimpleNotificationServicePublisher, TraceStore, TraceResolution, DynamoDBTraceRecordManager
+from domainpy.infrastructure import TraceStore, DynamoDBTraceRecordManager
+from domainpy.infrastructure.tracer.recordmanager import Resolution
 from domainpy.utils import Bus
 
-PUBLISHER_TOPIC_ARN = os.getenv('PUBLISHER_TOPIC_ARN')
 TRACE_STORE_TABLE_NAME = os.getenv('TRACE_STORE_TABLE_NAME')
-
-transcoder=Transcoder()
-mapper = Mapper(transcoder=transcoder)
-
-@mapper.register
-{message_definition}
-
-trace_store_manager = DynamoDBTraceRecordManager(TRACE_STORE_TABLE_NAME)
-trace_store = TraceStore(trace_store_manager, Bus())
-
-def handler(event, context):
-    query_string_parameters = event.get('queryStringParameters', None) or {{}}
-
-    sync = query_string_parameters.get('sync', 'true') == 'true'
-
-    trace_id = query_string_parameters.get('trace_id', str(uuid.uuid4()))
-
-    payload = json.loads(event['body'])
-    if 'pathParameters' in event:
-        path_parameters = event['pathParameters']
-        if path_parameters is not None:
-            for key,value in path_parameters.items():
-                if key not in payload:
-                    payload[key] = value
-
-    try:
-        message = transcoder.decode(
-            dict(
-                timestamp=datetime.datetime.timestamp(datetime.datetime.now()), trace_id=trace_id, payload=payload
-            ),
-            {message_topic}
-        )
-    except Exception as error:
-        return {{ 'statusCode': 400, 'isBase64Encoded': False, 'body': str(error) }}
-
-    publish(trace_id, message, {message_resolutions})
-    
-    body = {{ 'trace_id': trace_id, 'href': f'/_traces/{{trace_id}}' }}
-
-    if sync:
-        resolution = None
-        while resolution is None:
-            trace_contexts = tuple(trace_store_manager.get_trace_contexts(trace_id))
-            if trace_store.is_all_trace_context_resolved(trace_contexts):
-                resolution = 'success' if trace_store.is_all_trace_context_resolved_success(trace_contexts) else 'failure'
-            else:
-                time.sleep(0.1)
-
-        body.update({{
-            'resolution': resolution,
-            'errors': list(trace_store.get_trace_errors(trace_contexts))
-        }})
-
-    return {{
-        'statusCode': 202,
-        'headers': {{
-            'Content-Type': 'application/json'
-        }},
-        'isBase64Encoded': False,
-        'body': json.dumps(body)
-    }}
-
-
-def publish(
-    trace_id: str,
-    message: typing.Union[ApplicationCommand, IntegrationEvent],
-    resolutions: typing.Tuple[TraceResolution]
-) -> None:
-    _message = message
-    _record = mapper.serialize(message)
-
-    publisher = AwsSimpleNotificationServicePublisher(PUBLISHER_TOPIC_ARN, mapper)
-    publisher.publish(_message)
-    
-    trace_store.store_in_progress(trace_id, _record, resolutions)
-"""
-
-RESOLVER_CODE = \
-"""
-import os
-
-from domainpy.application import IntegrationEvent
-from domainpy.infrastructure import (
-    Mapper,
-    Transcoder,
-    TraceStore,
-    DynamoDBTraceRecordManager,
-    AwsSimpleNotificationServicePublisher
-)
-from domainpy.utils import Bus, PublisherSubscriber
-
-from aws_xray_sdk.core import patch_all
-patch_all()
-
-RESOLVER_TOPIC_ARN = os.getenv('RESOLVER_TOPIC_ARN')
-TRACE_STORE_TABLE_NAME = os.getenv('TRACE_STORE_TABLE_NAME')
-
-mapper = Mapper(
-    transcoder=Transcoder()
-)
-
-def handler(event, context):
-    resolver_bus = Bus()
-    resolver_bus.attach(
-        PublisherSubscriber(
-            AwsSimpleNotificationServicePublisher(
-                topic_arn=RESOLVER_TOPIC_ARN,
-                mapper=mapper
-            )
-        )
-    )
-
-    trace_store_manager = DynamoDBTraceRecordManager(TRACE_STORE_TABLE_NAME)
-    trace_store = TraceStore(trace_store_manager, resolver_bus)
-
-    trace_id = event['trace_id']
-    context = event['context']
-    resolve = event['resolve']
-    if resolve == IntegrationEvent.Resolution.success:
-        trace_store.store_context_success(trace_id, context)
-    elif resolve == IntegrationEvent.Resolution.failure:
-        error = event['error']
-        trace_store.store_context_failure(trace_id, context, error)
-
-    return { "done": True }
-"""
-
-GET_TRACE_RESOLUTION = """
-import os
-import json
-import boto3
-from boto3.dynamodb.types import TypeSerializer, TypeDeserializer
-
-TRACE_STORE_TABLE_NAME = os.getenv('TRACE_STORE_TABLE_NAME')
-
-
-serializer = TypeSerializer()
-deserializer = TypeDeserializer()
 
 def handler(aws_event, context):
     resource = aws_event['resource']
@@ -702,39 +275,53 @@ def trace_resolution_item_get_handler(aws_event, context):
     path_parameters = aws_event['pathParameters']
     trace_id = path_parameters['trace_id']
 
-    client = boto3.client('dynamodb')
-
-    result = client.get_item(
-        TableName=TRACE_STORE_TABLE_NAME,
-        Key={
-            'trace_id': serializer.serialize(trace_id)
-        },
-        ProjectionExpression='resolution, contexts_resolutions'
+    trace_record_manager = DynamoDBTraceRecordManager(TRACE_STORE_TABLE_NAME)
+    trace_contexts = tuple(
+        self.record_manager.get_trace_contexts(trace_id)
     )
 
-    if 'Item' in result:
-        item = result['Item']
+    resolution = Resolution.pending
 
-        resolution = deserializer.deserialize(item['resolution'])
-        contexts_resolutions = deserializer.deserialize(item['contexts_resolutions'])
-        completed = len([True for cr in contexts_resolutions.values() if cr['resolution'] != 'pending'])
-        expected = len(contexts_resolutions)
-        errors = [ cr['error'] for cr in contexts_resolutions.values() if cr['error'] is not None ]
+    resolved = TraceStore.is_all_trace_context_resolved(trace_contexts)
+    if resolve:
+        if TraceStore.is_all_trace_context_resolved_success(trace_contexts):
+            resolution = Resolution.success
+        else:
+            resolution = Resolution.failure
 
-        return {
-            "isBase64Encoded": False,
-            "statusCode": 200,
-            "body": json.dumps({
-                'resolution': resolution,
-                'completed': completed,
-                'expected': expected,
-                'errors': errors
-            })
-        }
-    else:
-        return {
-            "isBase64Encoded": False,
-            "statusCode": 404,
-            "body": ''
-        }
+    completed = sum(1 for tc in trace_contexts if tc.resolution != Resolution.pending)
+    expected = len(list(trace_contexts))
+    errors = TraceStore.get_trace_errors(trace_contexts)
+
+    return {
+        "isBase64Encoded": False,
+        "statusCode": 200,
+        "body": json.dumps({
+            'resolution': resolution,
+            'completed': completed,
+            'expected': expected,
+            'errors': errors
+        })
+    }
+"""
+
+RESOLVER_CODE = """
+import os
+import time
+
+t = time.time()
+from aws_xray_sdk.core import patch_all
+patch_all()
+print('PATCHING', time.time() - t)
+
+from domainpy.infrastructure import DynamoDBTraceStore, record_fromdict
+
+TRACE_STORE_TABLE_NAME = os.getenv('TRACE_STORE_TABLE_NAME')
+
+trace_store = DynamoDBTraceStore(mapper=None, table_name=TRACE_STORE_TABLE_NAME)
+
+def handler(event, context):
+    trace_store.resolve_context(
+        record_fromdict(event)
+    )
 """
