@@ -13,10 +13,13 @@ from domainpy_aws_cdk.constructs.projection import (
 
 class DynamoDBProjectionDataStack(cdk.Stack):
 
-    def __init__(self, scope: cdk.Construct, construct_id: str, *, projection_id: str, **kwargs):
+    def __init__(self, scope: cdk.Construct, construct_id: str, *, projection_id: str, parent_projection_id: typing.Optional[str] = None, **kwargs):
         super().__init__(scope, construct_id, **kwargs)
 
-        self.projection = DynamoDBProjection(self, 'projection', projection_id=projection_id)
+        self.projection = DynamoDBProjection(self, 'projection', 
+            projection_id=projection_id,
+            parent_projection_id=parent_projection_id
+        )
 
 
 class DynamoDBProjectorComputeStack(cdk.Stack):
@@ -30,6 +33,8 @@ class DynamoDBProjectorComputeStack(cdk.Stack):
         domain_subscriptions: typing.Dict[str, typing.Sequence[str]],
         data_stack: DynamoDBProjectionDataStack,
         share_prefix: str,
+        index: str = 'app',
+        handler: str = 'handler',
         **kwargs
     ):
         super().__init__(scope, construct_id, **kwargs)
@@ -38,7 +43,9 @@ class DynamoDBProjectorComputeStack(cdk.Stack):
             entry=entry,
             domain_subscriptions=domain_subscriptions,
             projection=data_stack.projection,
-            share_prefix=share_prefix
+            share_prefix=share_prefix,
+            index=index,
+            handler=handler
         )
 
 
@@ -70,6 +77,8 @@ class ElasticSearchProjectorComputeStack(cdk.Stack):
         domain_subscriptions: typing.Dict[str, typing.Sequence[str]],
         data_stack: ElasticSearchProjectionDataStack,
         share_prefix: str,
+        index: str = 'app',
+        handler: str = 'handler',
         **kwargs
     ) -> None:
         super().__init__(scope, construct_id, **kwargs)
@@ -78,5 +87,7 @@ class ElasticSearchProjectorComputeStack(cdk.Stack):
             entry=entry,
             domain_subscriptions=domain_subscriptions,
             projection=data_stack.projection,
-            share_prefix=share_prefix
+            share_prefix=share_prefix,
+            index=index,
+            handler=handler
         )

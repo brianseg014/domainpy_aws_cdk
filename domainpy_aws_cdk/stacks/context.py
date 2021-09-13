@@ -29,7 +29,6 @@ class ContextComputeStack(cdk.Stack):
         share_prefix: str,
         index: str = 'app',
         handler: str = 'handler',
-        layers: typing.Optional[typing.Sequence[lambda_.LayerVersion]] = None,
         **kwargs
     ) -> None:
         super().__init__(scope, construct_id, **kwargs)
@@ -42,8 +41,7 @@ class ContextComputeStack(cdk.Stack):
             idempotent_store=data_stack.idempotent_store,
             share_prefix=share_prefix,
             index=index,
-            handler=handler,
-            layers=layers
+            handler=handler
         )
 
 
@@ -59,6 +57,8 @@ class ContextMapComputeStack(cdk.Stack):
         integration_subscriptions: typing.Dict[str, typing.Sequence[str]],
         context_compute_stack: ContextComputeStack,
         share_prefix: str,
+        index: str = 'app',
+        handler: str = 'handler',
         **kwargs
     ) -> None:
         super().__init__(scope, construct_id, **kwargs)
@@ -68,5 +68,7 @@ class ContextMapComputeStack(cdk.Stack):
             domain_subscriptions=domain_subscriptions,
             integration_subscriptions=integration_subscriptions,
             context=context_compute_stack.context,
-            share_prefix=share_prefix
+            share_prefix=share_prefix,
+            index=index,
+            handler=handler
         )

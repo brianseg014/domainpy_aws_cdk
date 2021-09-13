@@ -17,11 +17,12 @@ from aws_cdk import aws_secretsmanager as secretsmanager
 from aws_cdk import aws_elasticsearch as elasticsearch
 from aws_cdk import custom_resources
 
+from domainpy_aws_cdk.constructs.utils import DomainpyLayerVersion
 
 
 class DynamoDBProjection(cdk.Construct):
 
-    def __init__(self, scope: cdk.Construct, construct_id: str, *, projection_id: str):
+    def __init__(self, scope: cdk.Construct, construct_id: str, *, projection_id: str, parent_projection_id: typing.Optional[str] = None):
         super().__init__(scope, construct_id)
 
         self.table = dynamodb.Table(self, 'table',
@@ -29,6 +30,14 @@ class DynamoDBProjection(cdk.Construct):
             billing_mode=dynamodb.BillingMode.PAY_PER_REQUEST,
             removal_policy=cdk.RemovalPolicy.DESTROY
         )
+
+        if parent_projection_id is not None:
+            self.table.add_global_secondary_index(
+                index_name='by_parent',
+                partition_key={ 'name': parent_projection_id, 'type': dynamodb.AttributeType.STRING },
+                sort_key={ 'name': projection_id, 'type': dynamodb.AttributeType.STRING },
+                projection_type=dynamodb.ProjectionType.ALL
+            )
 
 
 class DynamoDBProjector(cdk.Construct):
@@ -41,12 +50,17 @@ class DynamoDBProjector(cdk.Construct):
         entry: str,
         domain_subscriptions: typing.Dict[str, typing.Sequence[str]],
         projection: DynamoDBProjection,
-        share_prefix: str
+        share_prefix: str,
+        index: str = 'app',
+        handler: str = 'handler'
     ):
         super().__init__(scope, construct_id)
 
         domain_bus = events.EventBus.from_event_bus_name(
             self, 'domain-bus', cdk.Fn.import_value(f'{share_prefix}DomainBusName')
+        )
+        integration_bus = events.EventBus.from_event_bus_name(
+            self, 'integration-bus', cdk.Fn.import_value(f'{share_prefix}IntegrationBusName')
         )
 
         self.dead_letter_queue = sqs.Queue(self, "dlq")
@@ -74,23 +88,25 @@ class DynamoDBProjector(cdk.Construct):
                     ]
                 )
 
-        with tempfile.TemporaryDirectory() as tmp:
-            shutil.copytree(entry, tmp, dirs_exist_ok=True)
-            shutil.copytree('/Users/brianestrada/Offline/domainpy', os.path.join(tmp, 'domainpy'), dirs_exist_ok=True)
-
-            self.microservice = lambda_.DockerImageFunction(self, 'microservice',
-                code=lambda_.DockerImageCode.from_image_asset(
-                    directory=tmp
-                ),
-                environment={
-                    'DYNAMODB_TABLE_NAME': projection.table.table_name
-                },
-                timeout=cdk.Duration.seconds(10),
-                tracing=lambda_.Tracing.ACTIVE,
-                description='[PROJECTOR] Projects domain events into projection'
-            )
-            self.microservice.add_event_source(lambda_sources.SqsEventSource(self.queue))
-            projection.table.grant_read_write_data(self.microservice)
+        domainpy_layer = DomainpyLayerVersion(self, 'domainpy')
+        self.microservice = lambda_python.PythonFunction(self, 'microservice',
+            entry=entry,
+            runtime=lambda_.Runtime.PYTHON_3_8,
+            index=index,
+            handler=handler,
+            environment={
+                'DYNAMODB_TABLE_NAME': projection.table.table_name,
+                'INTEGRATION_EVENT_BUS_NAME': integration_bus.event_bus_name
+            },
+            memory_size=512,
+            layers=[domainpy_layer],
+            timeout=cdk.Duration.seconds(10),
+            tracing=lambda_.Tracing.ACTIVE,
+            description='[PROJECTOR] Projects domain events into projection'
+        )
+        self.microservice.add_event_source(lambda_sources.SqsEventSource(self.queue))
+        projection.table.grant_read_write_data(self.microservice)
+        integration_bus.grant_put_events_to(self.microservice)
 
 
 class ElasticSearchInitializerProps:
@@ -163,12 +179,17 @@ class ElasticSearchProjector(cdk.Construct):
         entry: str,
         domain_subscriptions: typing.Dict[str, typing.Sequence[str]],
         projection: ElasticSearchProjection,
-        share_prefix: str
+        share_prefix: str,
+        index: str = 'app',
+        handler: str = 'handler'
     ) -> None:
         super().__init__(scope, construct_id)
 
         domain_bus = events.EventBus.from_event_bus_name(
             self, 'domain-bus', cdk.Fn.import_value(f'{share_prefix}DomainBusName')
+        )
+        integration_bus = events.EventBus.from_event_bus_name(
+            self, 'integration-bus', cdk.Fn.import_value(f'{share_prefix}IntegrationBusName')
         )
 
         self.dead_letter_queue = sqs.Queue(self, "dlq")
@@ -196,24 +217,26 @@ class ElasticSearchProjector(cdk.Construct):
                     ]
                 )
 
-        with tempfile.TemporaryDirectory() as tmp:
-            shutil.copytree(entry, tmp, dirs_exist_ok=True)
-            shutil.copytree('/Users/brianestrada/Offline/domainpy', os.path.join(tmp, 'domainpy'), dirs_exist_ok=True)
-
-            self.microservice = lambda_.DockerImageFunction(self, 'microservice',
-                code=lambda_.DockerImageCode.from_image_asset(
-                    directory=tmp
-                ),
-                environment={
-                    'ELASTICSEARCH_URL': f'https://{projection.domain.domain_endpoint}',
-                    'ELASTICSEARCH_SECRET_NAME': projection.domain_credentials.secret_name
-                },
-                timeout=cdk.Duration.seconds(10),
-                tracing=lambda_.Tracing.ACTIVE,
-                description='[PROJECTOR] Projects domain events into projection'
-            )
-            self.microservice.add_event_source(lambda_sources.SqsEventSource(self.queue))
-            projection.domain_credentials.grant_read(self.microservice)
+        domainpy_layer = DomainpyLayerVersion(self, 'domainpy')
+        self.microservice = lambda_python.PythonFunction(self, 'microservice',
+            entry=entry,
+            runtime=lambda_.Runtime.PYTHON_3_8,
+            index=index,
+            handler=handler,
+            environment={
+                'ELASTICSEARCH_URL': f'https://{projection.domain.domain_endpoint}',
+                'ELASTICSEARCH_SECRET_NAME': projection.domain_credentials.secret_name,
+                'INTEGRATION_EVENT_BUS_NAME': integration_bus.event_bus_name
+            },
+            memory_size=512,
+            layers=[domainpy_layer],
+            timeout=cdk.Duration.seconds(10),
+            tracing=lambda_.Tracing.ACTIVE,
+            description='[PROJECTOR] Projects domain events into projection'
+        )
+        self.microservice.add_event_source(lambda_sources.SqsEventSource(self.queue))
+        projection.domain_credentials.grant_read(self.microservice)
+        integration_bus.grant_put_events_to(self.microservice)
 
 
 class ElasticSearchInitializer(cdk.Construct):

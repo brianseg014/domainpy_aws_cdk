@@ -59,8 +59,7 @@ class Context(cdk.Construct):
         idempotent_store: IdempotentStore,
         share_prefix: str,
         index: str = 'app',
-        handler: str = 'handler',
-        layers: typing.Optional[typing.Sequence[lambda_.LayerVersion]] = None
+        handler: str = 'handler'
     ) -> None:
         super().__init__(scope, construct_id)
 
@@ -115,10 +114,6 @@ class Context(cdk.Construct):
                     ]
                 )
 
-        _layers = layers
-        if layers is None:
-            _layers = []
-
         domainpy_layer = DomainpyLayerVersion(self, 'domainpy')
         self.microservice = lambda_python.PythonFunction(self, 'microservice',
             entry=entry,
@@ -133,9 +128,9 @@ class Context(cdk.Construct):
                 'EVENT_SCHEDULER_ARN': scheduler.state_machine_arn
             },
             memory_size=1024,
+            layers=[domainpy_layer],
             timeout=cdk.Duration.seconds(10),
             tracing=lambda_.Tracing.ACTIVE,
-            layers=[domainpy_layer, *_layers],
             description='[CONTEXT] Handles commands and integrations and emits domain events'
         )
         self.microservice.add_event_source(lambda_sources.SqsEventSource(self.queue))
@@ -159,7 +154,9 @@ class ContextMap(cdk.Construct):
         domain_subscriptions: typing.Dict[str, typing.Sequence[str]],
         integration_subscriptions: typing.Dict[str, typing.Sequence[str]],
         context: Context,
-        share_prefix: str
+        share_prefix: str,
+        index: str = 'app',
+        handler: str = 'handler'
     ) -> None:
         super().__init__(scope, construct_id)
 
@@ -210,21 +207,22 @@ class ContextMap(cdk.Construct):
                     ]
                 )
 
-        with tempfile.TemporaryDirectory() as tmp:
-            shutil.copytree(entry, tmp, dirs_exist_ok=True)
-            shutil.copytree('/Users/brianestrada/Offline/domainpy', os.path.join(tmp, 'domainpy'), dirs_exist_ok=True)
+        domainpy_layer = DomainpyLayerVersion(self, 'domainpy')
+        self.microservice = lambda_python.PythonFunction(self, 'microservice',
+            entry=entry,
+            runtime=lambda_.Runtime.PYTHON_3_8,
+            index=index,
+            handler=handler,
+            environment={
+                'CONTEXT_QUEUE_NAME': context.queue.queue_name,
+                'INTEGRATION_BUS_NAME': integration_bus.event_bus_name
+            },
+            memory_size=512,
+            layers=[domainpy_layer],
+            timeout=cdk.Duration.seconds(10),
+            tracing=lambda_.Tracing.ACTIVE,
+            description='[CONTEXT MAP] Listen for other contexts messages and transforms into known context message'
+        )
+        self.microservice.add_event_source(lambda_sources.SqsEventSource(self.queue))
 
-            self.microservice = lambda_.DockerImageFunction(self, "microservice",
-                code=lambda_.DockerImageCode.from_image_asset(
-                    directory=tmp
-                ),
-                environment={
-                    'CONTEXT_QUEUE_NAME': context.queue.queue_name
-                },
-                timeout=cdk.Duration.seconds(10),
-                tracing=lambda_.Tracing.ACTIVE,
-                description='[CONTEXT MAP] Listen for other contexts messages and transforms into known context message'
-            )
-            self.microservice.add_event_source(lambda_sources.SqsEventSource(self.queue))
-
-            context.queue.grant_send_messages(self.microservice)
+        context.queue.grant_send_messages(self.microservice)
