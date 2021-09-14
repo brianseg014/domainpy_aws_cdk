@@ -2,9 +2,9 @@ import os
 import typing
 import json
 import tempfile
-import shutil
 
 from aws_cdk import core as cdk
+from aws_cdk import aws_apigateway as apigateway
 from aws_cdk import aws_iam as iam
 from aws_cdk import aws_dynamodb as dynamodb
 from aws_cdk import aws_events as events
@@ -38,6 +38,60 @@ class DynamoDBProjection(cdk.Construct):
                 sort_key={ 'name': projection_id, 'type': dynamodb.AttributeType.STRING },
                 projection_type=dynamodb.ProjectionType.ALL
             )
+
+
+class DynamoDBView(cdk.Construct):
+
+    def __init__(
+        self, 
+        scope: cdk.Construct, 
+        construct_id: str, 
+        *, 
+        entry: str,
+        api_name: str, 
+        projection: DynamoDBProjection,
+        share_prefix: str,
+        index: str = 'app',
+        handler: str = 'handler'
+    ):
+        super().__init__(scope, construct_id)
+
+        domainpy_layer = DomainpyLayerVersion(self, 'domainpy')
+        self.microservice = lambda_python.PythonFunction(self, 'microservice',
+            entry=entry,
+            runtime=lambda_.Runtime.PYTHON_3_8,
+            index=index,
+            handler=handler,
+            environment={
+                'DYNAMODB_TABLE_NAME': projection.table.table_name
+            },
+            memory_size=512,
+            layers=[domainpy_layer],
+            timeout=cdk.Duration.seconds(10),
+            tracing=lambda_.Tracing.ACTIVE,
+            description='[VIEW] Query a projection'
+        )
+
+        self.rest = apigateway.RestApi(self, 'rest',
+            rest_api_name=f'{share_prefix}{api_name}',
+            deploy_options=apigateway.StageOptions(
+                stage_name='api',
+                tracing_enabled=True
+            )
+        )
+        
+        query_resource = self.rest.root.add_resource('query')
+        query_resource.add_method(
+            'get', apigateway.LambdaIntegration(
+                self.microservice,
+                proxy=False
+            )
+        )
+
+        cdk.CfnOutput(self, 'url',
+            export_name=f'{share_prefix}{api_name}Url',
+            value=self.rest.url
+        )
 
 
 class DynamoDBProjector(cdk.Construct):
@@ -317,6 +371,34 @@ class ElasticSearchInitializerProvider(cdk.Construct):
             total_timeout=cdk.Duration.hours(2)
         )
 
+VTL_REQUEST_TEMPLATE = """
+{
+    "resource": "$context.resourcePath",
+    "path": "$context.path",
+    "httpMethod": "$context.httpMethod",
+    "headers": {
+        #if($input.params().header.size() > 0),#end
+        #foreach($param in $input.params().header.keySet())
+        "$param": "$input.params().header.get($param)"
+        #if($foreach.hasNext),#end
+        #end
+    },
+    "queryStringParameters": {
+        #foreach($param in $input.params().querystring.keySet())
+        "$param": "$input.params().querystring.get($param)"
+        #if($foreach.hasNext),#end
+        #end
+    },
+    "pathParameters": {
+        #foreach($param in $input.params().path.keySet())
+        "$param": "$input.params().path.get($param)"
+        #if($foreach.hasNext),#end
+        #end
+    },
+    "parameters": $input.json('$'),
+    "body": "$util.escapeJavaScript($input.body)"
+}
+"""
 
 ON_EVENT_CODE = \
 """

@@ -200,7 +200,12 @@ class Gateway(cdk.Construct):
                                     message_topic_header_key=message_topic_header_key,
                                     message_topic=method_props.topic
                                 )
-                            }
+                            },
+                            integration_responses=[
+                                apigateway.IntegrationResponse(
+                                    status_code='200'
+                                )
+                            ]
                         ),
                         method_responses=[
                             apigateway.MethodResponse(status_code='200')

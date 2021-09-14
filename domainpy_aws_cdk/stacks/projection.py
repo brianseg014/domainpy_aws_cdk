@@ -4,6 +4,7 @@ from aws_cdk import core as cdk
 
 from domainpy_aws_cdk.constructs.projection import (
     DynamoDBProjection,
+    DynamoDBView,
     DynamoDBProjector,
     ElasticSearchInitializerProps,
     ElasticSearchProjection, 
@@ -19,6 +20,33 @@ class DynamoDBProjectionDataStack(cdk.Stack):
         self.projection = DynamoDBProjection(self, 'projection', 
             projection_id=projection_id,
             parent_projection_id=parent_projection_id
+        )
+
+
+class DynamoDBViewComputeStack(cdk.Stack):
+
+    def __init__(
+        self,
+        scope: cdk.Construct,
+        construct_id: str,
+        *,
+        entry: str,
+        api_name: str, 
+        data_stack: DynamoDBProjectionDataStack,
+        share_prefix: str,
+        index: str = 'app',
+        handler: str = 'handler',
+        **kwargs
+    ):
+        super().__init__(scope, construct_id, **kwargs)
+
+        self.view = DynamoDBView(self, 'view',
+            entry=entry,
+            api_name=api_name,
+            projection=data_stack.projection,
+            share_prefix=share_prefix,
+            index=index,
+            handler=handler
         )
 
 
