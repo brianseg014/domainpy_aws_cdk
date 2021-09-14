@@ -244,13 +244,15 @@ VTL_REQUEST_TEMPLATE = """
 """
 
 GET_TRACE_RESOLUTION_CODE = """
+import os
 import json
 
-from domainpy.infrastructure import TraceStore, DynamoDBTraceRecordManager
-from domainpy.infrastructure.tracer.recordmanager import Resolution
-from domainpy.utils import Bus
+from domainpy.infrastructure import DynamoDBTraceStore
+
 
 TRACE_STORE_TABLE_NAME = os.getenv('TRACE_STORE_TABLE_NAME')
+
+trace_store = DynamoDBTraceStore(mapper=None, table_name=TRACE_STORE_TABLE_NAME)
 
 def handler(aws_event, context):
     resource = aws_event['resource']
@@ -275,32 +277,16 @@ def trace_resolution_item_get_handler(aws_event, context):
     path_parameters = aws_event['pathParameters']
     trace_id = path_parameters['trace_id']
 
-    trace_record_manager = DynamoDBTraceRecordManager(TRACE_STORE_TABLE_NAME)
-    trace_contexts = tuple(
-        self.record_manager.get_trace_contexts(trace_id)
-    )
-
-    resolution = Resolution.pending
-
-    resolved = TraceStore.is_all_trace_context_resolved(trace_contexts)
-    if resolve:
-        if TraceStore.is_all_trace_context_resolved_success(trace_contexts):
-            resolution = Resolution.success
-        else:
-            resolution = Resolution.failure
-
-    completed = sum(1 for tc in trace_contexts if tc.resolution != Resolution.pending)
-    expected = len(list(trace_contexts))
-    errors = TraceStore.get_trace_errors(trace_contexts)
+    trace_resolution = trace_store.get_resolution(trace_id)
 
     return {
         "isBase64Encoded": False,
         "statusCode": 200,
         "body": json.dumps({
-            'resolution': resolution,
-            'completed': completed,
-            'expected': expected,
-            'errors': errors
+            'resolution': trace_resolution.resolution,
+            'completed': trace_resolution.completed,
+            'expected': trace_resolution.expected,
+            'errors': trace_resolution.errors
         })
     }
 """
