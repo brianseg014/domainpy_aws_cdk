@@ -6,9 +6,8 @@ from aws_cdk import aws_sns_subscriptions as sns_subscriptions
 
 from domainpy_aws_cdk.context.base import (
     IContext, 
-    ICommandChannelSubscription, 
-    IIntegrationEventChannelHook, 
-    IDomainEventChannelHook
+    ICommandChannelSubscription,
+    IChannelHook
 )
 from domainpy_aws_cdk.context.aws_lambda import LambdaContextBase
 from domainpy_aws_cdk.xcom.aws_sns import SnsTopicChannel
@@ -46,12 +45,14 @@ class SnsTopicCommandChannelSubscription(ICommandChannelSubscription):
         )
 
 
-class SnsTopicDomainEventChannelHook(IDomainEventChannelHook):
+class SnsTopicChannelHook(IChannelHook):
 
     def __init__(
         self, 
+        channel_name: str,
         channel: SnsTopicChannel
     ) -> None:
+        self.channel_name = channel_name
         self.channel = channel
 
     def bind(self, context: IContext):
@@ -64,29 +65,6 @@ class SnsTopicDomainEventChannelHook(IDomainEventChannelHook):
         context_function = context.function
         channel_topic = self.channel.topic
 
-        context_function.add_environment('DOMAIN_EVENT_CHANNEL_SERVICE', 'AWS::SNS::Topic')
-        context_function.add_environment('DOMAIN_EVENT_CHANNEL_TOPIC_ARN', channel_topic.topic_arn)
-        channel_topic.grant_publish(context_function)
-
-
-class SnsTopicIntegrationEventChannelHook(IIntegrationEventChannelHook):
-
-    def __init__(
-        self,
-        channel: SnsTopicChannel
-    ) -> None:
-        self.channel = channel
-
-    def bind(self, context: IContext):
-        if isinstance(context, LambdaContextBase):
-            self._bind_lambda_context(context)
-        else:
-            cdk.ValidationError('context-integrationeventchannel incompatible')
-
-    def _bind_lambda_context(self, context: LambdaContextBase):
-        context_function = context.function
-        channel_topic = self.channel.topic
-
-        context_function.add_environment('INTEGRATION_EVENT_CHANNEL_SERVICE', 'AWS::SNS::Topic')
-        context_function.add_environment('INTEGRATION_EVENT_CHANNEL_TOPIC_ARN', channel_topic.topic_arn)
+        context_function.add_environment(f'{self.channel_name}_SERVICE', 'AWS::SNS::Topic')
+        context_function.add_environment(f'{self.channel_name}_TOPIC_ARN', channel_topic.topic_arn)
         channel_topic.grant_publish(context_function)

@@ -1,15 +1,17 @@
 
-from domainpy_aws_cdk.view.base import IView, IQueryResultChannelHook
+from domainpy_aws_cdk.view.base import IView, IChannelHook
 from domainpy_aws_cdk.view.aws_lambda import LambdaViewBase
 from domainpy_aws_cdk.xcom.aws_dynamodb import DynamoDBTableChannel
 
 
-class DynamoDBTableQueryResultChannelHook(IQueryResultChannelHook):
+class DynamoDBTableChannelHook(IChannelHook):
 
     def __init__(
         self,
+        channel_name: str,
         channel: DynamoDBTableChannel
     ) -> None:
+        self.channel_name = channel_name
         self.channel = channel
 
     def bind(self, view: IView):
@@ -22,6 +24,6 @@ class DynamoDBTableQueryResultChannelHook(IQueryResultChannelHook):
         view_function = view.microservice
         channel_table = self.channel.table
 
-        view_function.add_environment('QUERY_RESULT_SERVICE', 'AWS::DynamoDB::Table')
-        view_function.add_environment('QUERY_RESULT_TABLE_NAME', channel_table.table_name)
+        view_function.add_environment(f'{self.channel_name}_SERVICE', 'AWS::DynamoDB::Table')
+        view_function.add_environment(f'{self.channel_name}_TABLE_NAME', channel_table.table_name)
         channel_table.grant_read_write_data(view_function)

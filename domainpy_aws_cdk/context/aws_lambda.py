@@ -47,12 +47,8 @@ class PythonLambdaEventSourcedContext(LambdaContextBase):
         id: str,
         *,
         microservice_props: lambda_python.PythonFunctionProps,
-        command_channel_subscription: ICommandChannelSubscription,
         event_store_hook: IEventStoreHook,
         trace_segment_store_hook: ITraceSegmentStoreHook,
-        domain_event_channel_hook: IDomainEventChannelHook,
-        integration_event_channel_hook: IIntegrationEventChannelHook,
-        scheduler_channel_hook: ISchedulerChannelHook
     ) -> None:
         super().__init__(scope, id)
 
@@ -71,12 +67,8 @@ class PythonLambdaEventSourcedContext(LambdaContextBase):
         )
         self.microservice.add_event_source(lambda_sources.SqsEventSource(self.queue))
 
-        command_channel_subscription.bind(self)
         event_store_hook.bind(self)
         trace_segment_store_hook.bind(self)
-        domain_event_channel_hook.bind(self)
-        integration_event_channel_hook.bind(self)
-        scheduler_channel_hook.bind(self)
 
     @property
     def function(self) -> lambda_.Function:

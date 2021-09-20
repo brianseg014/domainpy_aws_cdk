@@ -23,7 +23,7 @@ class IDomainEventChannelSubscription:
         pass
 
 
-class IIntegrationEventChannelHook:
+class IChannelHook:
     @abc.abstractmethod
     def bind(self, projector: IProjector):
         pass

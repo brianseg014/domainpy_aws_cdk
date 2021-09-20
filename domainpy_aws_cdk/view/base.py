@@ -17,13 +17,7 @@ class IQueryChannelSubscription:
         pass
 
 
-class IQueryResultChannelHook:
-    @abc.abstractmethod
-    def bind(self, view: IView):
-        pass
-
-
-class IIntegrationEventChannelHook:
+class IChannelHook:
     @abc.abstractmethod
     def bind(self, view: IView):
         pass

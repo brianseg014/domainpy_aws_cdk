@@ -17,13 +17,7 @@ class ICommandChannelSubscription:
         pass
 
 
-class IDomainEventChannelHook:
-    @abc.abstractmethod
-    def bind(self, context: IContext):
-        pass
-
-
-class IIntegrationEventChannelHook:
+class IChannelHook:
     @abc.abstractmethod
     def bind(self, context: IContext):
         pass
@@ -36,12 +30,6 @@ class IEventStoreHook:
 
 
 class ITraceSegmentStoreHook:
-    @abc.abstractmethod
-    def bind(self, context: IContext):
-        pass
-
-
-class ISchedulerChannelHook:
     @abc.abstractmethod
     def bind(self, context: IContext):
         pass

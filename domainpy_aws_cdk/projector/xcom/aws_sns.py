@@ -4,7 +4,7 @@ from aws_cdk import core as cdk
 from aws_cdk import aws_sns as sns
 from aws_cdk import aws_sns_subscriptions as sns_subscriptions
 
-from domainpy_aws_cdk.projector.base import IProjector, IDomainEventChannelSubscription, IIntegrationEventChannelHook
+from domainpy_aws_cdk.projector.base import IProjector, IDomainEventChannelSubscription, IChannelHook
 from domainpy_aws_cdk.projector.aws_lambda import LambdaProjectorBase
 from domainpy_aws_cdk.xcom.aws_sns import SnsTopicChannel
 
@@ -47,24 +47,26 @@ class SnsTopicDomainEventChannelSubscription(IDomainEventChannelSubscription):
         )
 
 
-class SnsTopicIntegrationEventChannelHook(IIntegrationEventChannelHook):
+class SnsTopicChannelHook(IChannelHook):
 
     def __init__(
         self,
+        channel_name: str,
         channel: SnsTopicChannel
     ) -> None:
+        self.channel_name = channel_name
         self.channel = channel
 
     def bind(self, projector: IProjector):
         if isinstance(projector, LambdaProjectorBase):
             self._bind_lambda_projector(projector)
         else:
-            cdk.ValidationError('projector-integrationeventchannel incompatible')
+            cdk.ValidationError('projector-channel incompatible')
 
     def _bind_lambda_projector(self, context: LambdaProjectorBase):
         context_function = context.microservice
         channel_topic = self.channel.topic
 
-        context_function.add_environment('INTEGRATION_EVENT_CHANNEL_SERVICE', 'AWS::SNS::Topic')
-        context_function.add_environment('INTEGRATION_EVENT_CHANNEL_TOPIC_ARN', channel_topic.topic_arn)
+        context_function.add_environment(f'{self.channel_name}_SERVICE', 'AWS::SNS::Topic')
+        context_function.add_environment(f'{self.channel_name}_TOPIC_ARN', channel_topic.topic_arn)
         channel_topic.grant_publish(context_function)

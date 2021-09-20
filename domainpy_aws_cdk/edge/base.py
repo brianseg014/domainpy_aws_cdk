@@ -17,7 +17,7 @@ class ITraceStoreHook:
         pass
 
 
-class ICommandChannelHook:
+class IChannelHook:
     @abc.abstractmethod
     def bind(self, gateway: IGateway):
         pass
