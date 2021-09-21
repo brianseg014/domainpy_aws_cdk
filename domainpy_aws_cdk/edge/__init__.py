@@ -12,17 +12,6 @@ from .aws_apigateway import (
     RestApiResourceProps,
 )
 
-from .tracestore.aws_dynamodb import (
-    DynamoDBTableTraceStoreHook
-)
-from .tracestore.xcom.aws_sns import (
-    SnsTopicChannelTraceStoreSubscription
-)
-
-from .xcom.aws_sns import (
-    SnsTopicCommandChannelHook
-)
-
 __all__ = [
     'IGateway',
     'BaseGateway',
@@ -32,10 +21,4 @@ __all__ = [
     'RestApiGatewayProps',
     'RestApiMethodProps',
     'RestApiResourceProps',
-
-    'SnsTopicChannelTraceStoreSubscription',
-
-    'DynamoDBTableTraceStoreHook',
-    
-    'SnsTopicCommandChannelHook'
 ]

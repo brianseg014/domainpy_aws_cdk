@@ -1,6 +1,5 @@
 import typing
 
-from aws_cdk import core as cdk
 from aws_cdk import aws_sns as sns
 from aws_cdk import aws_sns_subscriptions as sns_subscriptions
 
@@ -27,7 +26,7 @@ class SnsTopicCommandChannelSubscription(ICommandChannelSubscription):
         if isinstance(context, LambdaContextBase):
             self._bind_lambda_context(context)
         else:
-            raise cdk.ValidationError('context-channel incompatible')
+            raise Exception('context-channel incompatible')
 
     def _bind_lambda_context(self, context: LambdaContextBase):
         command_topic = self.channel.topic
@@ -59,10 +58,10 @@ class SnsTopicChannelHook(IChannelHook):
         if isinstance(context, LambdaContextBase):
             self._bind_lambda_context(context)
         else:
-            cdk.ValidationError('context-domaineventchannel incompatible')
+            raise Exception('context-channel incompatible')
 
     def _bind_lambda_context(self, context: LambdaContextBase):
-        context_function = context.function
+        context_function = context.microservice
         channel_topic = self.channel.topic
 
         context_function.add_environment(f'{self.channel_name}_SERVICE', 'AWS::SNS::Topic')

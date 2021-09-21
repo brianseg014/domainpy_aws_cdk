@@ -7,8 +7,9 @@ from aws_cdk import aws_apigateway as apigateway
 from aws_cdk import aws_iam as iam
 from aws_cdk import aws_lambda as lambda_
 from aws_cdk import aws_lambda_python as lambda_python
+from aws_cdk import aws_sqs as sqs
 
-from domainpy_aws_cdk.edge.base import BaseGateway, ITraceStoreHook, ICommandChannelHook
+from domainpy_aws_cdk.edge.base import BaseGateway, ITraceStoreHook
 from domainpy_aws_cdk.utils import DomainpyLayerVersion, LambdaIntegrationNoPermission
 
 
@@ -108,7 +109,6 @@ class RestApiGateway(BaseGateway):
         resources: typing.Sequence[RestApiResourceProps],
         microservice_props: typing.Optional[lambda_python.PythonFunctionProps] = None,
         rest_api_props: typing.Optional[apigateway.RestApiProps] = None,
-        command_channel_hook: ICommandChannelHook,
         trace_store_hook: ITraceStoreHook,
         message_topic_header_key: str = 'x-message-topic',
         export_name: typing.Optional[str] = None
@@ -207,8 +207,15 @@ class RestApiGateway(BaseGateway):
                         f'method {method_props.http_method}: {str(error)}'
                     ) from error
 
+        self.resolver_dlq = sqs.Queue(self, 'resolver-dlq')
+        self.resolver_queue = sqs.Queue(self, 'resolver-queue',
+            dead_letter_queue=sqs.DeadLetterQueue(
+                max_receive_count=3,
+                queue=self.resolver_dlq
+            )
+        )
+
         trace_store_hook.bind(self)
-        command_channel_hook.bind(self)
 
         if export_name is not None:
             cdk.CfnOutput(self, 'domainpy-layer-arn',

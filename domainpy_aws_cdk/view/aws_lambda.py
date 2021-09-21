@@ -6,7 +6,7 @@ from aws_cdk import aws_lambda_python as lambda_python
 from aws_cdk import aws_lambda_event_sources as lambda_sources
 from aws_cdk import aws_sqs as sqs
 
-from domainpy_aws_cdk.view.base import ViewBase, IQueryChannelSubscription, IQueryResultChannelHook, IIntegrationEventChannelHook, IProjectionHook, ITraceSegmentStoreHook
+from domainpy_aws_cdk.view.base import ViewBase, IProjectionHook, ITraceSegmentStoreHook
 from domainpy_aws_cdk.utils import DomainpyLayerVersion
 
 
@@ -34,9 +34,6 @@ class PythonLambdaView(LambdaViewBase):
         *,
         microservice_props: lambda_python.PythonFunctionProps,
         projection_hook: IProjectionHook,
-        query_channel_subscription: IQueryChannelSubscription,
-        query_result_channel_hook: IQueryResultChannelHook,
-        integration_event_channel_hook:IIntegrationEventChannelHook,
         trace_segment_store_hook: ITraceSegmentStoreHook
     ) -> None:
         super().__init__(scope, id)
@@ -57,9 +54,6 @@ class PythonLambdaView(LambdaViewBase):
         self._microservice.add_event_source(lambda_sources.SqsEventSource(self.queue))
 
         projection_hook.bind(self)
-        query_channel_subscription.bind(self)
-        query_result_channel_hook.bind(self)
-        integration_event_channel_hook.bind(self)
         trace_segment_store_hook.bind(self)
 
     @property

@@ -11,18 +11,6 @@ from .aws_lambda import (
     PythonLambdaContextMap
 )
 
-from .xcom.aws_sns import (
-    SnsTopicDomainEventChannelSubscription,
-)
-
-from .context.aws_lambda import (
-    LambdaContextHook
-)
-
-from .tracesegmentstore.aws_dynamodb import (
-    DynamoDBTableTraceSegmentStoreHook
-)
-
 __all__ = [
     'IContextMap',
     'ContextMapBase',
@@ -31,10 +19,4 @@ __all__ = [
 
     'LambdaContextMapBase',
     'PythonLambdaContextMap',
-
-    'SnsTopicDomainEventChannelSubscription',
-
-    'LambdaContextHook',
-
-    'DynamoDBTableTraceSegmentStoreHook'
 ]

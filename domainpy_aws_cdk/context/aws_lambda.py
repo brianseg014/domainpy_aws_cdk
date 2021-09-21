@@ -8,12 +8,8 @@ from aws_cdk import aws_sqs as sqs
 
 from domainpy_aws_cdk.context.base import (
     ContextBase, 
-    ICommandChannelSubscription, 
     IEventStoreHook,
     ITraceSegmentStoreHook,
-    IDomainEventChannelHook,
-    IIntegrationEventChannelHook,
-    ISchedulerChannelHook
 )
 from domainpy_aws_cdk.utils import DomainpyLayerVersion
 
@@ -34,7 +30,7 @@ class LambdaContextBase(ContextBase):
         )
 
     @abc.abstractproperty
-    def function(self) -> lambda_.Function:
+    def microservice(self) -> lambda_.Function:
         pass
 
 
@@ -56,7 +52,7 @@ class PythonLambdaEventSourcedContext(LambdaContextBase):
             microservice_props = lambda_python.PythonFunctionProps(**microservice_props)
 
         domainpy_layer = DomainpyLayerVersion(self, 'domainpy')
-        self.microservice = lambda_python.PythonFunction(self, 'microservice',
+        self._microservice = lambda_python.PythonFunction(self, 'microservice',
             runtime=lambda_.Runtime.PYTHON_3_8,
             memory_size=1024,
             layers=[domainpy_layer],
@@ -65,11 +61,11 @@ class PythonLambdaEventSourcedContext(LambdaContextBase):
             description='[CONTEXT] Handles commands and integrations and emits domain events',
             **microservice_props._values
         )
-        self.microservice.add_event_source(lambda_sources.SqsEventSource(self.queue))
+        self._microservice.add_event_source(lambda_sources.SqsEventSource(self.queue))
 
         event_store_hook.bind(self)
         trace_segment_store_hook.bind(self)
 
     @property
-    def function(self) -> lambda_.Function:
-        return self.microservice
+    def microservice(self) -> lambda_.Function:
+        return self._microservice

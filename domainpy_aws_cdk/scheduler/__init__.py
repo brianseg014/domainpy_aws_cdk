@@ -1,26 +1,19 @@
 
 from .base import (
-    ISchedulerChannel,
-    SchedulerChannelBase,
+    IScheduleEventChannel,
+    ScheduleEventChannelBase,
     IIntegrationEventChannelHook,
-    IntegrationEventChannelHookBase
 )
 
 from .aws_sfn import (
-    StepFunctionSchedulerChannel
+    StepFunctionScheduleEventChannel
 )
 
-from .xcom.aws_sns import (
-    SnsTopicIntegrationEventChannelHook
-)
 
 __all__ = [
-    'ISchedulerChannel',
-    'SchedulerChannelBase',
+    'IScheduleEventChannel',
+    'ScheduleEventChannelBase',
     'IIntegrationEventChannelHook',
-    'IntegrationEventChannelHookBase',
 
-    'StepFunctionSchedulerChannel',
-
-    'SnsTopicIntegrationEventChannelHook'
+    'StepFunctionScheduleEventChannel',
 ]

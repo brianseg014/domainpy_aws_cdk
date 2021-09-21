@@ -4,9 +4,8 @@ from aws_cdk import core as cdk
 from aws_cdk import aws_apigateway as apigateway
 from aws_cdk import aws_lambda as lambda_
 from aws_cdk import aws_lambda_event_sources as lambda_event_sources
-from aws_cdk import aws_sqs as sqs
 
-from domainpy_aws_cdk.edge.base import IGateway, ITraceStoreHook, ITraceStoreSubscription
+from domainpy_aws_cdk.edge.base import IGateway, ITraceStoreHook
 from domainpy_aws_cdk.edge.aws_apigateway import RestApiGateway
 from domainpy_aws_cdk.tracestore.aws_dynamodb import DynamoDBTableTraceStore
 
@@ -16,7 +15,6 @@ class DynamoDBTableTraceStoreHook(ITraceStoreHook):
     def __init__(
         self,
         trace_store: DynamoDBTableTraceStore,
-        trace_store_subscription: ITraceStoreSubscription,
         *,
         deploy_resolver: bool = True,
         deploy_trace_resource: bool = True,
@@ -33,7 +31,6 @@ class DynamoDBTableTraceStoreHook(ITraceStoreHook):
         self.deploy_trace_resource = deploy_trace_resource
         self.resolver_props = resolver_props
         self.trace_props = trace_props
-        self.trace_store_subscription = trace_store_subscription
 
     def bind(self, gateway: IGateway) -> None:
         if isinstance(gateway, RestApiGateway):
@@ -48,14 +45,6 @@ class DynamoDBTableTraceStoreHook(ITraceStoreHook):
         self.trace_store.table.grant_read_write_data(gateway.microservice)
 
         if self.deploy_resolver:
-            self.resolver_dlq = sqs.Queue(gateway, 'resolver-dlq')
-            self.resolver_queue = sqs.Queue(gateway, 'resolver-queue',
-                dead_letter_queue=sqs.DeadLetterQueue(
-                    max_receive_count=3,
-                    queue=self.resolver_dlq
-                )
-            )
-
             _resolver_props = {}
             if self.resolver_props is not None:
                 _resolver_props = lambda_.FunctionProps(**self.resolver_props._values)
@@ -76,7 +65,7 @@ class DynamoDBTableTraceStoreHook(ITraceStoreHook):
             )
             self.trace_store.table.grant_read_write_data(self.resolver)
             self.resolver.add_event_source(
-                lambda_event_sources.SqsEventSource(self.resolver_queue)
+                lambda_event_sources.SqsEventSource(gateway.resolver_queue)
             )
 
         if self.deploy_trace_resource:
@@ -102,8 +91,6 @@ class DynamoDBTableTraceStoreHook(ITraceStoreHook):
             traces_resource = gateway.rest.root.add_resource('_traces')
             trace_item_resource = traces_resource.add_resource('{trace_id}')
             trace_item_resource.add_method('get', apigateway.LambdaIntegration(self.trace))
-
-            self.trace_store_subscription.bind(self)
 
 
 GET_TRACE_RESOLUTION_CODE = """

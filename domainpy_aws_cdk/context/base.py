@@ -1,14 +1,28 @@
+from __future__ import annotations
+
 import abc
 
 from aws_cdk import core as cdk
 
 
 class IContext:
-    pass
+    @abc.abstractmethod
+    def add_command_subscriptions(self, *command_channel_subscriptions: ICommandChannelSubscription):
+        pass
+
+    @abc.abstractmethod
+    def add_channels(self, *channels_hook: IChannelHook):
+        pass
 
 
 class ContextBase(cdk.Construct, IContext):
-    pass
+    def add_command_subscriptions(self, *command_channel_subscriptions: ICommandChannelSubscription):
+        for command_channel_subscription in command_channel_subscriptions:
+            command_channel_subscription.bind(self)
+
+    def add_channels(self, *channels_hook: IChannelHook):
+        for channel_hook in channels_hook:
+            channel_hook.bind(self)
 
 
 class ICommandChannelSubscription:
