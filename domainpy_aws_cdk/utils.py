@@ -1,88 +1,76 @@
-import os
+import re
+import math
 import typing
-import tempfile
-import shutil
+import hashlib
 
-from aws_cdk import core as cdk
-from aws_cdk import aws_apigateway as apigateway
-from aws_cdk import aws_iam as iam
-from aws_cdk import aws_lambda as lambda_
-from aws_cdk import aws_lambda_python as lambda_python
+HIDDEN_FROM_HUMAN_ID = "Resource"
 
+HIDDEN_ID = "Default"
 
-class DomainpyLayerVersion(lambda_python.PythonLayerVersion):
+PATH_SEP = "/"
 
-    def __init__(self, scope: cdk.Construct, id: str) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            shutil.copytree('/Users/brianestrada/Offline/domainpy/domainpy', os.path.join(tmp, 'domainpy'), dirs_exist_ok=True)
-            shutil.copyfile('/Users/brianestrada/Offline/domainpy/setup.py', os.path.join(tmp, 'setup.py'))
-
-            with open(os.path.join(tmp, 'requirements.txt'), 'w') as file:
-                file.write('aws-xray-sdk==2.8.0\n')
-                file.write('typeguard==2.12.1\n')
-
-            super().__init__(
-                scope, id, 
-                entry=tmp, 
-                compatible_runtimes=[
-                    lambda_.Runtime.PYTHON_3_7,
-                    lambda_.Runtime.PYTHON_3_8
-                ]
-            )
+MAX_LEN = 256
+HASH_LEN = 8
 
 
-class LambdaIntegrationNoPermission(apigateway.LambdaIntegration):
-    '''Integrates an AWS Lambda function to an API Gateway method.
+def make_unique_resource_name(
+    components: typing.Sequence[str],
+    separator: str,
+    allowed_special_characters: str,
+) -> str:
+    components = [c for c in components if c != HIDDEN_ID]
 
-    Example::
-
-        # Example automatically generated without compilation. See https://github.com/aws/jsii/issues/826
-        handler = lambda_.Function(self, "MyFunction", ...)
-        api.add_method("GET", LambdaIntegration(handler))
-    '''
-
-    def __init__(
-        self,
-        handler: lambda_.IFunction,
-        *,
-        allow_test_invoke: typing.Optional[bool] = None,
-        proxy: typing.Optional[bool] = None,
-        cache_key_parameters: typing.Optional[typing.Sequence[str]] = None,
-        cache_namespace: typing.Optional[str] = None,
-        connection_type: typing.Optional[apigateway.ConnectionType] = None,
-        content_handling: typing.Optional[apigateway.ContentHandling] = None,
-        credentials_passthrough: typing.Optional[bool] = None,
-        credentials_role: typing.Optional[iam.IRole] = None,
-        integration_responses: typing.Optional[typing.Sequence[apigateway.IntegrationResponse]] = None,
-        passthrough_behavior: typing.Optional[apigateway.PassthroughBehavior] = None,
-        request_parameters: typing.Optional[typing.Mapping[str, str]] = None,
-        request_templates: typing.Optional[typing.Mapping[str, str]] = None,
-        timeout: typing.Optional[cdk.Duration] = None,
-        vpc_link: typing.Optional[apigateway.IVpcLink] = None,
-    ) -> None:
-        super().__init__(
-            handler,
-            allow_test_invoke=allow_test_invoke,
-            proxy=proxy,
-            cache_key_parameters=cache_key_parameters,
-            cache_namespace=cache_namespace,
-            connection_type=connection_type,
-            content_handling=content_handling,
-            credentials_passthrough=credentials_passthrough,
-            credentials_role=credentials_role,
-            integration_responses=integration_responses,
-            passthrough_behavior=passthrough_behavior,
-            request_parameters=request_parameters,
-            request_templates=request_templates,
-            timeout=timeout,
-            vpc_link=vpc_link,
+    if len(components) == 0:
+        raise Exception(
+            "Unable to calculate a unique id for an empty set of components"
         )
 
-    def bind(self, method: apigateway.Method):
-        config = super().bind(method)
-        permissions = filter(
-            lambda x: isinstance(x, lambda_.CfnPermission), method.node.children
+    if len(components) == 1:
+        candidate = remove_non_allowd_special_characters(
+            components[0], allowed_special_characters
         )
-        for permission in permissions:
-            method.node.try_remove_child(permission.node.id)
-        return config
+
+        if len(candidate) <= MAX_LEN:
+            return candidate
+
+    hash = path_hash(components)
+    human = separator.join(
+        [
+            remove_non_allowd_special_characters(c, allowed_special_characters)
+            for c in components
+            if c != HIDDEN_FROM_HUMAN_ID and len(c) > 0
+        ]
+    )
+
+    max_human_len = MAX_LEN - HASH_LEN
+    return (
+        f"{split_in_middle(human, max_human_len)}{hash}"
+        if len(human) > max_human_len
+        else f"{human}{hash}"
+    )
+
+
+def path_hash(path: typing.Sequence[str]) -> str:
+    md5 = hashlib.md5(PATH_SEP.join(path).encode("utf-8")).hexdigest()
+    return md5[:HASH_LEN].upper()
+
+
+def remove_non_allowd_special_characters(
+    s: str, allowed_special_characters: str
+) -> str:
+    return re.sub(f"[^A-Za-z0-9{allowed_special_characters}]", "", s)
+
+
+def split_in_middle(s, max_len: int = MAX_LEN - HASH_LEN) -> str:
+    half = math.floor(max_len / 2)
+    return s[:half] + s[-half:]
+
+
+def remove_dupes(path: typing.Sequence[str]) -> typing.Sequence[str]:
+    ret: typing.List[str] = []
+
+    for component in path:
+        if len(ret) == 0 or not ret[len(ret) - 1].endswith(component):
+            ret.append(component)
+
+    return ret
